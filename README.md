@@ -1,22 +1,7 @@
-# huge thanks to https://github.com/26worldcup 
-for making matches/venues available which allowed me to experiment. Please note this is an experimental phase and not a finish product. The finish product will have my own api and data sets.
-
-please visit https://github.com/fPHAXL/FWCD for details.
-
-## many iterations to get to the current state 
-https://github.com/fPHAXL/FWCD/tree/main/Current_State is outdated as of july 1.
-
-# Latest updates (check logs.md)
-- [x] added an auto hide/click to pin side panels
-- [x] uses local time to calculate "Live" status to mitigate api stall
-- [x] Penalities score handling
-- [x] cosmetic uplift
-
-
 # FWCD
-My attempt in aggregating historical and current FIFA Tournament data and presenting it in clean, detailed, and interactive dashboard. I don't know what I am doing; help, guide, and work with me. 
+My attempt in aggregating historical and current FIFA Tournament data and presenting it in clean, detailed, and interactive dashboard. I don't know what I am doing; help, guide, and work with me. please visit https://github.com/fPHAXL/FWCD for details.
 
-# https://fphaxl.github.io/
+## https://fphaxl.github.io/
 
 
 # 🌍 FIFA World Cup Dashboard - Historical & Current
@@ -55,6 +40,12 @@ An immersive, real-time visualization of the 2026 FIFA World Cup featuring a liv
 -  in "Current_State"
 -  As you see it's NOT ready yet, but you can see the screenshots of current progress in /Current.State 
 
+# Latest updates (check logs.md)
+-  many iterations to get to the current state https://github.com/fPHAXL/FWCD/tree/main/Current_State is outdated as of july 1.
+- [x] added an auto hide/click to pin side panels
+- [x] uses local time to calculate "Live" status to mitigate api stall
+- [x] Penalities score handling
+- [x] cosmetic uplift
 
 
 📁 Project Structure
@@ -98,10 +89,12 @@ This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
 
 See the [LICENSE](./LICENSE) file for the full legal text.   
 
-### 🙏 Acknowledgments
-Match data provided by the open-source FIFA World Cup community.
-Flag icons courtesy of FlagCDN.
-Map tiles by OpenStreetMap & CARTO.
+## 🙏 Acknowledgments
+-  #### huge thanks to https://github.com/26worldcup 
+for making matches/venues available which allowed me to experiment. Please note this is an experimental phase and not a finish product. The finish product will have my own api and data sets.
+-  Match data provided by the open-source FIFA World Cup community.
+-  Flag icons courtesy of FlagCDN.
+-  Map tiles by OpenStreetMap & CARTO.
 
 Built with ⚽ and 🗺️ for the 2026 FIFA World Cup.
 
