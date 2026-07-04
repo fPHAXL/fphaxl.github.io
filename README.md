@@ -19,8 +19,8 @@ An immersive, real-time visualization of the 2026 FIFA World Cup featuring a liv
 -  ⚡ Real-Time Updates: Auto-refreshes every 60 seconds; calculates live match minutes based on kickoff time (ignoring API delays).
 -  📱 Responsive UI: Auto-hiding side brackets, glassmorphism design, and mobile-friendly optimizations. 
 
-## 🎮 Usage Guide
-### Timeline Controls
+### 🎮 Usage Guide
+#### Timeline Controls
 - Scroll: Use mouse wheel or trackpad to scroll through matches. 
 - Click Card: Centers the timeline on a specific match.
 - Red Marker: Click the center red line to jump to the current live/recent match. 
@@ -28,19 +28,19 @@ An immersive, real-time visualization of the 2026 FIFA World Cup featuring a liv
 - Scroll: Hover over the year bar and scroll to change years.
 - Click: Click a specific year to filter the map to that World Cup.
 - Reset: Click the container background to show all years.
-### Bracket (Side Panels)
+#### Bracket (Side Panels)
 -  Auto-Hide: Brackets hide when idle to maximize map view. Move mouse to screen edges to reveal.
 -  Pin: Click anywhere on a bracket to pin it open.  Click again to unpin.
 -  View Both: Pin the left bracket, then hover the right edge to compare both sides.
-### Map Interactions
+#### Map Interactions
 -  Hover Stadium: Shows popup with match schedule, capacity, and city.
 -  Hover Historical Dot: Shows team name, result, and host nation(s) with glow effect.
 -  Zoom/Pan: Standard map controls. Stadium markers repeat across world copies.
-### 📸 Screenshots
+#### 📸 Screenshots
 -  in "Current_State"
 -  As you see it's NOT ready yet, but you can see the screenshots of current progress in /Current.State 
 
-# Latest updates (check logs.md)
+## Latest updates (check logs.md)
 -  many iterations to get to the current state https://github.com/fPHAXL/FWCD/tree/main/Current_State is outdated as of july 1.
 - [x] added an auto hide/click to pin side panels
 - [x] uses local time to calculate "Live" status to mitigate api stall
