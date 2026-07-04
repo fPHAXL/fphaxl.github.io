@@ -48,7 +48,7 @@ An immersive, real-time visualization of the 2026 FIFA World Cup featuring a liv
 - [x] cosmetic uplift
 
 
-📁 Project Structure
+### 📁 Project Structure
 FWCD/
 ├──           # Main application (single-file)
 
@@ -70,7 +70,7 @@ FWCD/
 
 
 
-🤝 Contributing
+### 🤝 Contributing
 Contributions are welcome! Since this is a visualization project, feel free to:
 
 Report Bugs: Found a match with incorrect data? Open an issue.
@@ -80,8 +80,6 @@ Improve Design: CSS tweaks for better mobile responsiveness are appreciated.
 ## 📄 License
 
 This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
-
-**Why GPLv3?**
 - ✅ **Share-Alike (Copyleft)**: Any derivative works, modifications, or projects that incorporate this code **must also be open-sourced** under GPLv3.  This ensures improvements are shared back with the community.
 - ✅ **Patent Protection**: Includes an explicit patent grant from contributors to users. 
 - ✅ **Frontend Enforcement**: Since this code runs in the browser, it is considered "distributed" to the user, triggering the open-source requirement immediately. 
