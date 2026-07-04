@@ -1,4 +1,4 @@
-# FWCD ## https://fphaxl.github.io/
+# FWCD  https://fphaxl.github.io/
 My attempt in aggregating historical and current FIFA Tournament data and presenting it in clean, detailed, and interactive dashboard. I don't know what I am doing; help, guide, and work with me. please visit https://github.com/fPHAXL/FWCD for details.
 
 
