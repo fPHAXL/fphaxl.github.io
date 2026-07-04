@@ -88,8 +88,7 @@ This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
 See the [LICENSE](./LICENSE) file for the full legal text.   
 
 ## 🙏 Acknowledgments
--  #### huge thanks to https://github.com/26worldcup 
-for making matches/venues available which allowed me to experiment. Please note this is an experimental phase and not a finish product. The finish product will have my own api and data sets.
+-  #### huge thanks to https://github.com/26worldcup for making matches/venues available which allowed me to experiment. Please note this is an experimental phase and not a finish product. The finish product will have my own api and data sets.
 -  Match data provided by the open-source FIFA World Cup community.
 -  Flag icons courtesy of FlagCDN.
 -  Map tiles by OpenStreetMap & CARTO.
