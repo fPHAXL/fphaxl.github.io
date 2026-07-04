@@ -579,12 +579,12 @@ const fifaWorldCupParticipants = [
   { id: "202601", name: "Mexico", country: "Mexico", lat: 19.4326, lng: -99.1332, year: "2026", Success: "Host" },
   { id: "202602", name: "United States", country: "United States", lat: 38.9072, lng: -77.0369, year: "2026", Success: "Host" },
   { id: "202603", name: "Canada", country: "Canada", lat: 45.4215, lng: -75.6972, year: "2026", Success: "Host" },
+  { id: "550", name: "Morocco", country: "Morocco", lat: 34.0209, lng: -6.8416, year: "2026", Success: "Quarter-Final" },
   // --- ROUND 16 QUALIFIERS (Success: "Round 16") ---  
   { id: "545", name: "Canada", country: "Canada", lat: 45.4215, lng: -75.6972, year: "2026", Success: "Round 16" },
   { id: "563", name: "France", country: "France", lat: 48.8566, lng: 2.3522, year: "2026", Success: "Round 16" },
   { id: "543", name: "Mexico", country: "Mexico", lat: 19.4326, lng: -99.1332, year: "2026", Success: "Round 16" },
   { id: "552", name: "Paraguay", country: "Paraguay", lat: -25.2637, lng: -57.5759, year: "2026", Success: "Round 16" },
-  { id: "550", name: "Morocco", country: "Morocco", lat: 34.0209, lng: -6.8416, year: "2026", Success: "Round 16" },
   { id: "572", name: "England", country: "England", lat: 51.5074, lng: -0.1278, year: "2026", Success: "Round 16" },
   { id: "564", name: "Norway", country: "Norway", lat: 59.9139, lng: 10.7522, year: "2026", Success: "Round 16" },
   { id: "549", name: "Brazil", country: "Brazil", lat: -15.7975, lng: -47.8919, year: "2026", Success: "Round 16" },
