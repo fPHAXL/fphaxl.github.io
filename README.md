@@ -39,7 +39,7 @@ An immersive, real-time visualization of the 2026 FIFA World Cup featuring a liv
 -  in "Current_State"
 -  As you see it's NOT ready yet, but you can see the screenshots of current progress in /Current.State 
 
-## Latest updates (check ./logs.md)
+## Latest updates (check ./Logs.md)
 -  many iterations to get to the current state https://github.com/fPHAXL/FWCD/tree/main/Current_State is outdated as of july 1.
 - [x] added an auto hide/click to pin side panels
 - [x] uses local time to calculate "Live" status to mitigate api stall
