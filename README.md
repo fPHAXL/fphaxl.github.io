@@ -1,7 +1,7 @@
 # FWCD  https://fphaxl.github.io/
 My attempt in aggregating historical and current FIFA Tournament data and presenting it in clean, detailed, and interactive dashboard. I don't know what I am doing; help, guide, and work with me. please visit https://github.com/fPHAXL/FWCD for details.
 
-
+<img src="/img/Screenshot 2026-07-04.png" alt="FWCD"/>
 
 # 🌍 FIFA World Cup Dashboard - Historical & Current
 An immersive, real-time visualization of the 2026 FIFA World Cup featuring a live match timeline, interactive knockout bracket, and historical data exploration. Built with Leaflet.js, D3.js, and modern vanilla JavaScript.
