@@ -7,17 +7,17 @@ Player & Manager Profiles: Headshots and biographical data for all squad members
 Logo Collection: Club and national team emblems in high resolution 
 
 ## Phase 1: Tournament Structure & Historical Data Collection
-- [ ] Objective: Gather and structure all tournament-level and match-level data for every World Cup year. 
+- [x] Objective: Gather and structure all tournament-level and match-level data for every World Cup year. 
 
 ### Key Data Points:
 
-- [ ] Tournament metadata (host nation, dates, champion, runner-up, third place)
-- [ ] Match statistics (total matches, attendance, goals, average goals per match)
-- [ ] Individual match details (lineups, substitutions, coaches, timeline of events)
+- [x] Tournament metadata (host nation, dates, champion, runner-up, third place)
+- [x] Match statistics (total matches, attendance, goals, average goals per match)
+- [x] Individual match details (lineups, substitutions, coaches, timeline of events)
 - [ ] Goal breakdowns (method of scoring: header, left foot, right foot, penalty, own goal)
-- [ ] Stadium information (capacity, location, weather, fun facts)
-- [ ] Group standings and knockout progression paths
-- [ ] Player tournament appearances and performance metrics 
+- [x] Stadium information (capacity, location, weather, fun facts)
+- [x] Group standings and knockout progression paths
+- [x] Player tournament appearances and performance metrics 
 
 #### Deliverables:
 
@@ -48,10 +48,10 @@ Visual timeline of kit evolution
 ### Key Data Points:
 
 - [ ] Official tournament headshots
-- [ ] Biographical data (date of birth, place of birth, height, dominant foot)
-- [ ] Club affiliations during tournament
-- [ ] Position-specific categorization (goalkeeper, defender, midfielder, attacker)
-- [ ] Captaincy and appearance records
+- [x] Biographical data (date of birth, place of birth, height, dominant foot)
+- [x] Club affiliations during tournament
+- [x] Position-specific categorization (goalkeeper, defender, midfielder, attacker)
+- [x] Captaincy and appearance records
 
 #### Deliverables:
 
