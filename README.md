@@ -91,6 +91,8 @@ See the [LICENSE](./LICENSE) file for the full legal text.
 -  Match data provided by the open-source FIFA World Cup community.
 -  Flag icons courtesy of FlagCDN.
 -  Map tiles by OpenStreetMap & CARTO.
+-  Brave AI (Leo)
+-  Z AI (GLM)
 
 Built with ⚽ and 🗺️ for the 2026 FIFA World Cup.
 
