@@ -1,0 +1,2 @@
+- some navigations
+- some player picture load 
