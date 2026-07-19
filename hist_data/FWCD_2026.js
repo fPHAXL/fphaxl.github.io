@@ -61531,15 +61531,15 @@ window.FWCD_2026 = {
         {
           "minute": 37,
           "team": "away",
-          "scorer": "Saka 37', 45+1', 87' pen",
-          "type": "penalty"
+          "scorer": "Saka",
+          
         },
         {
           "minute": 45,
           "addedMinute": 1,
           "team": "away",
-          "scorer": "Saka 37', 45+1', 87' pen",
-          "type": "penalty"
+          "scorer": "Saka",
+          
         },
         {
           "minute": 48,
@@ -61559,7 +61559,7 @@ window.FWCD_2026 = {
         {
           "minute": 87,
           "team": "away",
-          "scorer": "Saka 37', 45+1', 87' pen",
+          "scorer": "Saka",
           "type": "penalty"
         },
         {
