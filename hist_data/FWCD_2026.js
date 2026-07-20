@@ -13691,7 +13691,7 @@ window.FWCD_2026 = {
             "name": "Real Madrid",
             "country": "Spain"
           },
-          "goals": 8,
+          "goals": 10,
           "captain": true,
           "yellowCards": 1
         },
@@ -117838,7 +117838,7 @@ window.FWCD_2026 = {
         "name": "Real Madrid",
         "country": "Spain"
       },
-      "goals": 8,
+      "goals": 10,
       "captain": true,
       "identity": {
         "id": "kylian-mbappe-1998",
