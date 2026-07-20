@@ -117907,7 +117907,7 @@ window.FWCD_2026 = {
           "team": "France",
           "position": "FW",
           "jersey": 10,
-          "goals": 8,
+          "goals": 10,
           "assists": null,
           "minutes": null,
           "captain": true,
@@ -117917,7 +117917,7 @@ window.FWCD_2026 = {
           }
         }
       ],
-      "totalGoals": 20,
+      "totalGoals": 22,
       "tournamentCount": 3,
       "current_team_context": "France"
     },
