@@ -15,15 +15,15 @@ window.FWCD_2026 = {
     "matchesCount": 104,
     "ballName": "Adidas Trionda",
     "mascot": "Maple, Zayu, and Clutch",
-    "champion": null,
-    "runnerUp": null,
-    "thirdPlace": null,
-    "topScorer": null,
-    "bestPlayer": null,
-    "bestYoungPlayer": null,
-    "bestGoalkeeper": null,
-    "totalGoals": null,
-    "totalAttendance": null,
+    "champion": "Spain",
+    "runnerUp": "Argentina",
+    "thirdPlace": "England",
+    "topScorer": {"player": "Kylian Mbappé", "goals": 10  }   ,
+    "bestPlayer": "Rodri",
+    "bestYoungPlayer": "Pau Cubarsí",
+    "bestGoalkeeper": "Unai Simón",
+    "totalGoals": 307,
+    "totalAttendance": 6730303,   
     "stadiumIds": [
       "arrowhead-stadium",
       "att-stadium",
@@ -55503,7 +55503,7 @@ window.FWCD_2026 = {
         {
           "minute": 70,
           "team": "away",
-          "scorer": "Mbappé 70' pen",
+          "scorer": "Mbappé",
           "type": "penalty"
         }
       ],

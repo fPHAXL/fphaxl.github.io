@@ -579,7 +579,7 @@ const fifaWorldCupParticipants = [
   { id: "202601", name: "Mexico", country: "Mexico", lat: 19.4326, lng: -99.1332, year: "2026", Success: "Host" },
   { id: "202602", name: "United States", country: "United States", lat: 38.9072, lng: -77.0369, year: "2026", Success: "Host" },
   { id: "202603", name: "Canada", country: "Canada", lat: 45.4215, lng: -75.6972, year: "2026", Success: "Host" },
-  { id: "561", name: "Spain", country: "Spain", lat: 40.4168, lng: -3.7038, year: "2026", Success: "Final" },
+  { id: "561", name: "Spain", country: "Spain", lat: 40.4168, lng: -3.7038, year: "2026", Success: "Champion", Star:"2" },
   { id: "566", name: "Argentina", country: "Argentina", lat: -34.6037, lng: -58.3816, year: "2026", Success: "Final" },
   { id: "563", name: "France", country: "France", lat: 48.8566, lng: 2.3522, year: "2026", Success: "Semi-Final" },
   { id: "572", name: "England", country: "England", lat: 51.5074, lng: -0.1278, year: "2026", Success: "Semi-Final" },
