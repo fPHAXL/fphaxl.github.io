@@ -451,7 +451,7 @@
             
             g.selectAll('.host-line').data(renderLinks).join('path').attr('class', 'host-line')
                 .attr('d', d => { const x1 = map.latLngToLayerPoint([d.source.lat, d.source.lng]).x; const y1 = map.latLngToLayerPoint([d.source.lat, d.source.lng]).y; const x2 = map.latLngToLayerPoint([d.target.lat, d.target.lng]).x; const y2 = map.latLngToLayerPoint([d.target.lat, d.target.lng]).y; return `M${x1},${y1} L${x2},${y2}`; })
-                .attr('stroke', '#fff').attr('stroke-width', selectedYear ? 0.7 : 0.5).attr('stroke-opacity', selectedYear ? 0.8 : 0.4).attr('stroke-linecap', 'round');
+                .attr('stroke', '#fff').attr('stroke-width', selectedYear ? 0.5 : 0.3).attr('stroke-opacity', selectedYear ? 0.5 : 0.3).attr('stroke-linecap', 'round');
 
             const tooltip = document.getElementById('map-tooltip');
             g.selectAll('circle').data(renderNodes).join('circle')
