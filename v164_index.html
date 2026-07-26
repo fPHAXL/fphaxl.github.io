@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>FIFA World Cup Dashboard</title>
+    <link rel="icon" type="image/svg+xml" href="img/icons/favicon.svg">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <link rel="stylesheet" href="css/v164_style.css">
+</head>
+<body>
+
+    <!-- UI Elements -->
+    <div id="timeline-center-marker" title="Jump to Current Time"></div>
+
+    <!-- Timeline hover trigger zone (invisible strip for auto-hide) -->
+    <div id="timeline-hover-zone"></div>
+
+    <!-- Timeline Container -->
+    <div id="timeline-wrapper">
+        <div id="timeline-track"></div>
+    </div>
+
+    <!-- Bracket Containers -->
+    <div id="bracket-left" class="bracket-container">
+        <!-- Global Search Panel (multi-purpose: search + 2026 bracket cards below) -->
+        <div id="global-search-panel">
+            <input type="text" id="global-search-input" placeholder="🔍 Search players, teams, stadiums, refs..." autocomplete="off">
+            <div id="global-search-results"></div>
+        </div>
+        <!-- 2026 bracket cards will be rendered here by renderBrackets() -->
+    </div>
+    <div id="bracket-right" class="bracket-container"></div>
+
+    <!-- Map -->
+    <div id="map"></div>
+    <div id="map-tooltip"></div>
+
+    <!-- Champion Stars (floating above history bar) -->
+    <div id="champion-stars"></div>
+
+    <!-- Leaderboard button (always visible, position shifts when year is active) -->
+    <div id="leaderboard-btn" title="All-Time Stats Leaderboard">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FFD700" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/>
+            <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/>
+            <path d="M4 22h16"/>
+            <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/>
+            <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/>
+            <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>
+        </svg>
+    </div>
+
+    <!-- Head-to-Head comparison button (always visible, right of leaderboard) -->
+    <div id="compare-btn" title="Head-to-Head Comparison">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FFD700" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 16h6v-2a4 4 0 0 0-3-3.87"/>
+            <path d="M8 16H2v-2a4 4 0 0 1 3-3.87"/>
+            <path d="M12 12m-4 0a4 4 0 1 0 8 0a4 4 0 1 0-8 0"/>
+            <line x1="12" y1="2" x2="12" y2="4"/>
+            <line x1="12" y1="20" x2="12" y2="22"/>
+        </svg>
+    </div>
+
+    <!-- Global Search button (always visible, right of compare) -->
+    <div id="search-btn" title="Global Search">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FFD700" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"/>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+    </div>
+
+    <!-- Replay button (visible when year is selected, right of search) -->
+    <div id="replay-btn" title="Animated Tournament Replay">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FFD700" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+        </svg>
+    </div>
+
+    <!-- Bracket Tree toggle button (small icon above history bar) -->
+    <div id="bracket-toggle-btn" title="Toggle Bracket Tree">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FFD700" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="10" width="4" height="4" rx="1"/>
+            <rect x="9" y="5" width="4" height="4" rx="1"/>
+            <rect x="9" y="15" width="4" height="4" rx="1"/>
+            <rect x="16" y="2" width="4" height="4" rx="1"/>
+            <rect x="16" y="18" width="4" height="4" rx="1"/>
+            <line x1="6" y1="12" x2="9" y2="7"/>
+            <line x1="6" y1="12" x2="9" y2="17"/>
+            <line x1="13" y1="7" x2="16" y2="4"/>
+            <line x1="13" y1="7" x2="16" y2="20"/>
+            <line x1="13" y1="17" x2="16" y2="4"/>
+            <line x1="13" y1="17" x2="16" y2="20"/>
+        </svg>
+    </div>
+
+    <!-- Bracket Tree SVG container (floats over map, no background) -->
+    <div id="bracket-svg-container"></div>
+
+    <!-- Bracket Popup (dedicated overlay, above tree) -->
+    <div id="bracket-popup-backdrop"></div>
+    <div id="bracket-popup"></div>
+
+    <!-- History Bar (New) -->
+    <div id="history-bar" class="history-bar" title="Click for Standings">
+        <div id="history-content" class="history-content"></div>
+        <div class="hb-hint">▼ Click for Standings</div>
+    </div>
+
+    <!-- Year Filter -->
+    <div id="year-filter-container" title="Scroll to change year, Click to reset">
+    </div>
+
+    <!-- News Ticker (trivia crawl) -->
+    <div id="news-ticker">
+        <div class="ticker-label">⚽ WC Trivia</div>
+        <div class="ticker-track" id="ticker-track"></div>
+    </div>
+
+    <!-- Standings Overlay (modal) -->
+    <div id="standings-overlay">
+        <div class="standings-card">
+            <div class="standings-header">
+                <h2 id="standings-title">Standings</h2>
+                <button class="standings-close" id="standings-close" title="Close">✕</button>
+            </div>
+            <div class="standings-body" id="standings-body"></div>
+        </div>
+    </div>
+
+    <!-- Historical Bracket Tree drawer removed — now uses floating SVG container -->
+
+    <!-- Leaderboard Overlay -->
+    <div id="leaderboard-overlay">
+        <div class="leaderboard-card">
+            <div class="leaderboard-body" id="leaderboard-body"></div>
+            <div class="leaderboard-tabs-container" id="leaderboard-tabs-container"></div>
+        </div>
+    </div>
+
+    <!-- Profile Overlay (SEPARATE from leaderboard card — for search result clicks) -->
+    <div id="profile-overlay">
+        <div class="profile-card">
+            <div class="profile-header">
+                <h2 id="profile-title">🔍 Search Result</h2>
+                <button class="standings-close" id="profile-close" title="Close">✕</button>
+            </div>
+            <div class="profile-body" id="profile-body"></div>
+        </div>
+    </div>
+
+    <!-- Head-to-Head Comparison Overlay -->
+    <div id="compare-overlay">
+        <!-- Comparison display (ABOVE input bar, above icons) -->
+        <div id="compare-display" class="compare-display-panel"></div>
+        <!-- Floating input bar (above icons, below display) -->
+        <div class="compare-input-bar">
+            <div class="compare-bar-header">
+                <span class="compare-bar-title">⚖️ Head-to-Head Comparison</span>
+                <button class="standings-close" id="compare-close" title="Close">✕</button>
+            </div>
+            <div class="compare-search-row" id="compare-search-row" style="margin-bottom: 0; padding: 8px;">
+                <!-- Slots are dynamically rendered by renderCompareSlots() -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Global Search Overlay -->
+    <div id="search-overlay">
+        <!-- Floating input bar (above icons) -->
+        <div class="search-input-bar">
+            <div class="search-bar-header">
+                <span class="search-bar-title">🔍 Search</span>
+                <button class="standings-close" id="search-close" title="Close">✕</button>
+            </div>
+            <input type="text" id="search-overlay-input" placeholder="Search players, teams, stadiums, refs across all World Cups..." autocomplete="off">
+        </div>
+        <!-- Results panel (below input bar, above icons) -->
+        <div id="search-overlay-results" class="search-results-panel"></div>
+    </div>
+
+    <!-- Animated Replay Controls -->
+    <div id="replay-controls">
+        <button class="rp-btn" id="rp-play" title="Play/Pause">▶</button>
+        <button class="rp-btn" id="rp-prev" title="Previous Match">⏮</button>
+        <button class="rp-btn" id="rp-next" title="Next Match">⏭</button>
+        <button class="rp-btn rp-speed-btn" id="rp-slower" title="Slower" style="font-size:0.7rem;width:22px;height:22px;">−</button>
+        <span class="rp-speed" id="rp-speed" title="Click to reset to 1x">1x</span>
+        <button class="rp-btn rp-speed-btn" id="rp-faster" title="Faster" style="font-size:0.7rem;width:22px;height:22px;">+</button>
+        <span class="rp-menu-btn" id="rp-menu-btn">⚙ Events</span>
+        <button class="rp-btn" id="rp-close" title="Exit Replay">✕</button>
+    </div>
+    <div id="replay-event-menu">
+        <label><input type="checkbox" id="rp-show-goals" checked> ⚽ Goals</label>
+        <label><input type="checkbox" id="rp-show-cards" checked> 🟨🟥 Cards</label>
+        <label><input type="checkbox" id="rp-show-subs" checked> ↔ Substitutions</label>
+    </div>
+    <!-- Enhanced Replay Stage (replaces old #replay-overlay) -->
+    <div id="replay-stage"></div>
+
+    <!-- F1-Style Position Tracker Panel -->
+    <div id="replay-f1-panel">
+        <div class="f1-panel-header">
+            <span id="f1-title">Live Tracker</span>
+            <span id="f1-mode-tag" style="font-size: 0.6rem; color: #888; letter-spacing: 1px;">—</span>
+        </div>
+        <div class="f1-panel-body" id="f1-body">
+            <div class="f1-empty">Press play to start the tournament replay.</div>
+        </div>
+    </div>
+
+    <!-- Player tooltip (hovered player name) -->
+    <div class="rs-player-tooltip" id="rs-player-tooltip"></div>
+
+    <!-- Global tooltip for formation pitch player icons in static match views
+         (popup / bracket / standings / leaderboard / profile contexts).
+         Kept at body root so it is never clipped by overflow:auto containers. -->
+    <div class="hist-lineup-pitch-tooltip-global" id="hist-lineup-pitch-tooltip"></div>
+
+    <!-- Data Scripts -->
+    <script src="hist_data/venues.js"></script>
+    <script src="hist_data/FWCD_Participants.js"></script>
+    <script src="hist_data/manifest.js"></script>
+
+    <!-- v164: Player/Coach/Ref photo manifest (Wikipedia URLs).
+         Loaded SYNCHRONOUSLY via XMLHttpRequest so it's available before any
+         view renders. If the file is missing, falls back to SVGs gracefully.
+         The manifest is cached by the browser (force-cache) so subsequent loads
+         are instant. -->
+    <script>
+        // v164: Synchronous manifest load — blocks page render until the manifest
+        // is loaded (or fails). This prevents the race condition where getPlayerPhotoHtml
+        // runs before the async fetch completes, causing photos to fall back to SVG
+        // and never re-render.
+        //
+        // A synchronous XHR is normally discouraged, but for a small JSON file
+        // (~500KB-1MB) cached by the browser, the blocking time is <100ms on
+        // subsequent loads. First load may take 200-500ms depending on disk.
+        // This is acceptable for a dashboard that depends on the manifest for
+        // every photo render.
+        window.PLAYER_PHOTO_MANIFEST = null;
+        (function() {
+            try {
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', 'hist_data/player_photos_manifest.json', false); // false = synchronous
+                xhr.setRequestHeader('Cache-Control', 'force-cache');
+                xhr.send();
+                if (xhr.status === 200) {
+                    window.PLAYER_PHOTO_MANIFEST = JSON.parse(xhr.responseText);
+                }
+            } catch (e) {
+                // File missing or invalid JSON — manifest stays null, SVGs used
+            }
+        })();
+    </script>
+   
+    
+    <script src="script/v164_script.js"></script>
+
+    <!-- v162: Embedded photo manifest generator.
+         Run window.fetchPhotoManifest() from the console to generate
+         player_photos_manifest.json (takes 30-45 min, resume supported). -->
+    <script>
+    (async function() {
+    'use strict';
+
+    // ==================== CONFIG ====================
+    const RATE_REST_MS = 200;       // 5 req/s for REST API
+    const RATE_COMMONS_MS = 350;    // ~3 req/s for Commons search
+    const SAVE_EVERY = 50;          // Save progress every N entities
+    const COMMONS_SEARCH_LIMIT = 5; // Top 5 Commons results per query
+    const SCORE_THRESHOLD = 6;      // Minimum score to accept a year-specific photo
+    const STORAGE_KEY = 'player_photo_manifest_progress';
+
+    // ==================== STATE ====================
+    let manifest = {};
+    let stats = { total: 0, processed: 0, found: 0, yearSpecific: 0, skipped: 0, errors: 0 };
+
+    // ==================== UTILITIES ====================
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+    function log(msg) {
+        console.log(`[photo-fetch] ${msg}`);
+    }
+
+    function saveProgress() {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({
+                manifest,
+                stats,
+                timestamp: Date.now()
+            }));
+        } catch (e) {
+            console.warn('[photo-fetch] Could not save progress to localStorage:', e.message);
+        }
+    }
+
+    function loadProgress() {
+        try {
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (!saved) return false;
+            const data = JSON.parse(saved);
+            manifest = data.manifest || {};
+            stats = data.stats || stats;
+            log(`Resumed from localStorage: ${stats.processed} entities already processed.`);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // ==================== DATA COLLECTION ====================
+    /**
+     * Collects all player, coach, and ref names from loaded FWCD data,
+     * along with the years they appear in.
+     * Returns: { players: Map<name, Set<year>>, coaches: Map<name, Set<year>>, refs: Map<name, Set<year>> }
+     */
+    function collectEntities() {
+        const players = new Map();  // name → Set<year>
+        const coaches = new Map();  // name → Set<year>
+        const refs = new Map();     // name → Set<year>
+
+        // Get list of years from FWCD_Participants
+        const years = (typeof uniqueYears !== 'undefined' && Array.isArray(uniqueYears))
+            ? uniqueYears.map(y => parseInt(y, 10)).filter(y => !isNaN(y))
+            : [2002, 2006, 2010, 2014, 2018, 2022];
+
+        log(`Scanning ${years.length} years: ${years.join(', ')}`);
+
+        for (const year of years) {
+            const varName = `FWCD_${year}`;
+            const data = window[varName];
+            if (!data) {
+                log(`  ${varName} not loaded — skipping.`);
+                continue;
+            }
+
+            // Players: from players_FULL (detailed bios) AND from each team's squad
+            if (Array.isArray(data.players_FULL)) {
+                data.players_FULL.forEach(p => {
+                    if (p && p.name) {
+                        if (!players.has(p.name)) players.set(p.name, new Set());
+                        players.get(p.name).add(year);
+                    }
+                });
+            }
+            // Also scan teams_summary.squad (some players only appear here)
+            if (Array.isArray(data.teams_summary)) {
+                data.teams_summary.forEach(t => {
+                    if (t && Array.isArray(t.squad)) {
+                        t.squad.forEach(p => {
+                            if (p && (p.name || p.player)) {
+                                const name = p.name || p.player;
+                                if (!players.has(name)) players.set(name, new Set());
+                                players.get(name).add(year);
+                            }
+                        });
+                    }
+                    // Coaches
+                    if (t && t.coach && t.coach.name) {
+                        if (!coaches.has(t.coach.name)) coaches.set(t.coach.name, new Set());
+                        coaches.get(t.coach.name).add(year);
+                    }
+                });
+            }
+
+            // Refs: from matches_FULL.referee.name
+            if (Array.isArray(data.matches_FULL)) {
+                data.matches_FULL.forEach(m => {
+                    if (m && m.referee && m.referee.name) {
+                        if (!refs.has(m.referee.name)) refs.set(m.referee.name, new Set());
+                        refs.get(m.referee.name).add(year);
+                    }
+                });
+            }
+        }
+
+        log(`Collected: ${players.size} players, ${coaches.size} coaches, ${refs.size} refs`);
+        return { players, coaches, refs };
+    }
+
+    // ==================== WIKIPEDIA REST API ====================
+    /**
+     * Fetch the default thumbnail URL for a name from Wikipedia REST API.
+     * Returns: URL string, or null if not found / error.
+     */
+    async function fetchDefaultPhoto(name) {
+        // Wikipedia article titles use underscores, not spaces
+        const title = encodeURIComponent(name.replace(/\s+/g, '_'));
+        const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${title}`;
+
+        try {
+            const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
+            if (!resp.ok) return null;
+            const data = await resp.json();
+            // Skip disambiguation pages and "no article" responses
+            if (data.type === 'disambiguation' || data.type === 'not-found' || data.type === 'Internal error') {
+                return null;
+            }
+            if (data.thumbnail && data.thumbnail.source) {
+                return data.thumbnail.source;
+            }
+            return null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // ==================== WIKIMEDIA COMMONS SEARCH ====================
+    /**
+     * Score a Commons search result file based on how likely it is to be a
+     * good year-specific headshot of the player.
+     *
+     * Scoring:
+     *   +10  filename contains player's surname (case-insensitive)
+     *   +5   filename contains the year
+     *   +5   filename contains "world cup", "wc", or "fifa"
+     *   +3   filename contains "cropped" (usually headshots)
+     *   +3   filename contains team name (argentina, brazil, etc.)
+     *   -5   filename contains " vs " or " v " (match photos — usually group shots)
+     *   -3   filename contains "team" (squad photos)
+     */
+    function scoreCommonsResult(filename, playerName, year) {
+        const lower = filename.toLowerCase();
+        let score = 0;
+
+        // Surname check — use the last word of the player name
+        const parts = playerName.trim().toLowerCase().split(/\s+/);
+        const surname = parts[parts.length - 1];
+        if (surname.length >= 3 && lower.includes(surname)) score += 10;
+
+        // Year check
+        if (lower.includes(String(year))) score += 5;
+
+        // World Cup context
+        if (lower.includes('world cup') || lower.includes('wc') || lower.includes('fifa')) score += 5;
+
+        // Cropped (headshot indicator)
+        if (lower.includes('cropped')) score += 3;
+
+        // Team name (basic check — could be enhanced with alias list)
+        // We'll just check for common WC team name fragments
+        const teamWords = ['argentina', 'brazil', 'germany', 'france', 'spain', 'england', 'italy',
+                          'portugal', 'netherlands', 'belgium', 'croatia', 'uruguay', 'mexico',
+                          'japan', 'korea', 'usa', 'switzerland', 'denmark', 'sweden', 'poland',
+                          'serbia', 'morocco', 'senegal', 'ghana', 'nigeria', 'cameroon',
+                          'ecuador', 'chile', 'colombia', 'peru', 'australia', 'iran', 'saudi',
+                          'qatar', 'tunisia', 'wales', 'scotland', 'ireland', 'russia', 'ukraine',
+                          'austria', 'hungary', 'czech', 'romania', 'greece', 'turkey', 'algeria',
+                          'ivory', 'costa', 'honduras', 'south', 'north', 'egypt', 'iraq', 'kuwait'];
+        for (const w of teamWords) {
+            if (lower.includes(w)) { score += 3; break; }
+        }
+
+        // Penalties
+        if (lower.includes(' vs ') || lower.includes(' v ')) score -= 5;
+        if (lower.includes('team') && !lower.includes('cropped')) score -= 3;
+
+        return score;
+    }
+
+    /**
+     * Search Wikimedia Commons for a year-specific photo of the player.
+     * Returns: { url, filename, score } or null if no good result.
+     */
+    async function fetchYearSpecificPhoto(playerName, year) {
+        // Build search query — try multiple formats
+        // Format 1: "PlayerName Year World Cup"
+        // Format 2: "PlayerName Year" (broader)
+        const queries = [
+            `${playerName} ${year} World Cup`,
+            `${playerName} ${year}`,
+        ];
+
+        for (const query of queries) {
+            const params = new URLSearchParams({
+                action: 'query',
+                generator: 'search',
+                gsrsearch: query,
+                gsrnamespace: '6',  // File namespace
+                gsrlimit: String(COMMONS_SEARCH_LIMIT),
+                prop: 'imageinfo',
+                iiprop: 'url|mimetype',
+                iiurlwidth: '320',
+                format: 'json',
+                origin: '*'
+            });
+            const url = `https://commons.wikimedia.org/w/api.php?${params}`;
+
+            try {
+                const resp = await fetch(url);
+                if (!resp.ok) continue;
+                const data = await resp.json();
+                const pages = data?.query?.pages;
+                if (!pages) continue;
+
+                // Score each result, pick the best
+                const results = [];
+                for (const pid in pages) {
+                    const page = pages[pid];
+                    const filename = page.title || '';
+                    // Skip non-image files (PDFs, OGgs, etc.)
+                    const ii = page.imageinfo && page.imageinfo[0];
+                    if (!ii) continue;
+                    if (ii.mimetype && !ii.mimetype.startsWith('image/')) continue;
+                    if (!ii.thumburl) continue;
+
+                    const score = scoreCommonsResult(filename, playerName, year);
+                    results.push({ url: ii.thumburl, filename, score });
+                }
+
+                if (results.length === 0) continue;
+
+                // Sort by score descending
+                results.sort((a, b) => b.score - a.score);
+                const best = results[0];
+
+                // Only accept if score meets threshold
+                if (best.score >= SCORE_THRESHOLD) {
+                    return best;
+                }
+                // If first query didn't find a good match, try the next query format
+            } catch (e) {
+                // Network error — try next query
+                continue;
+            }
+        }
+
+        return null;
+    }
+
+    // ==================== MAIN PROCESSING ====================
+    async function processEntity(name, years, type) {
+        // Already processed? (from resume)
+        const key = name;
+        if (manifest[key] !== undefined) {
+            stats.skipped++;
+            return;
+        }
+
+        stats.processed++;
+
+        // Fetch default photo from Wikipedia REST API
+        await sleep(RATE_REST_MS);
+        const defaultUrl = await fetchDefaultPhoto(name);
+
+        if (!defaultUrl) {
+            // Not on Wikipedia — mark as null so we don't retry
+            manifest[key] = null;
+            stats.errors++;
+            return;
+        }
+
+        stats.found++;
+        const entry = { default: defaultUrl, byYear: {} };
+
+        // For players, fetch year-specific photos (only for years they actually played)
+        if (type === 'player' && years.size > 0) {
+            const sortedYears = Array.from(years).sort();
+            for (const year of sortedYears) {
+                await sleep(RATE_COMMONS_MS);
+                const result = await fetchYearSpecificPhoto(name, year);
+                if (result) {
+                    entry.byYear[String(year)] = result.url;
+                    stats.yearSpecific++;
+                }
+            }
+        }
+
+        manifest[key] = entry;
+    }
+
+    async function run() {
+        log('Starting photo manifest generation...');
+
+        // Try to resume from localStorage
+        loadProgress();
+
+        // Make sure all FWCD data is loaded
+        log('Ensuring all FWCD data files are loaded...');
+        if (typeof ensureCrossYearIndex === 'function') {
+            await ensureCrossYearIndex();
+        }
+        // Force-load each year's data
+        const years = (typeof uniqueYears !== 'undefined' && Array.isArray(uniqueYears))
+            ? uniqueYears.map(y => parseInt(y, 10)).filter(y => !isNaN(y))
+            : [2002, 2006, 2010, 2014, 2018, 2022];
+        for (const year of years) {
+            const varName = `FWCD_${year}`;
+            if (!window[varName]) {
+                log(`  Loading FWCD_${year}...`);
+                try {
+                    if (typeof loadHistoricalData === 'function') {
+                        await loadHistoricalData(year);
+                    }
+                } catch (e) {
+                    log(`  Could not load FWCD_${year}: ${e.message}`);
+                }
+            }
+        }
+
+        // Collect all entities
+        const { players, coaches, refs } = collectEntities();
+        stats.total = players.size + coaches.size + refs.size;
+        log(`Total entities to process: ${stats.total} (${players.size} players, ${coaches.size} coaches, ${refs.size} refs)`);
+
+        // Process players (with year-specific photos)
+        log('--- Processing PLAYERS (with year-specific photos) ---');
+        let playerCount = 0;
+        for (const [name, years] of players) {
+            playerCount++;
+            if (playerCount % 25 === 0) {
+                log(`  Player ${playerCount}/${players.size}: ${name} (years: ${Array.from(years).join(',')})`);
+            }
+            await processEntity(name, years, 'player');
+            if (stats.processed % SAVE_EVERY === 0) {
+                saveProgress();
+                log(`  [progress] processed=${stats.processed}/${stats.total} found=${stats.found} yearSpecific=${stats.yearSpecific} errors=${stats.errors}`);
+            }
+        }
+
+        // Process coaches (default only — no year-specific)
+        log('--- Processing COACHES (default photo only) ---');
+        for (const [name, years] of coaches) {
+            await processEntity(name, years, 'coach');
+            if (stats.processed % SAVE_EVERY === 0) {
+                saveProgress();
+                log(`  [progress] processed=${stats.processed}/${stats.total} found=${stats.found} errors=${stats.errors}`);
+            }
+        }
+
+        // Process refs (default only)
+        log('--- Processing REFEREES (default photo only) ---');
+        for (const [name, years] of refs) {
+            await processEntity(name, years, 'ref');
+            if (stats.processed % SAVE_EVERY === 0) {
+                saveProgress();
+                log(`  [progress] processed=${stats.processed}/${stats.total} found=${stats.found} errors=${stats.errors}`);
+            }
+        }
+
+        // Final save
+        saveProgress();
+
+        // Summary
+        log('========================================');
+        log('PHOTO MANIFEST GENERATION COMPLETE');
+        log('========================================');
+        log(`Total entities:    ${stats.total}`);
+        log(`Processed:         ${stats.processed}`);
+        log(`Skipped (resumed): ${stats.skipped}`);
+        log(`Found on Wikipedia: ${stats.found}`);
+        log(`  Year-specific:   ${stats.yearSpecific}`);
+        log(`Not found:         ${stats.errors}`);
+        log(`Manifest size:     ${Object.keys(manifest).length} entries`);
+
+        // Store globally for inspection
+        window.PLAYER_PHOTO_MANIFEST = manifest;
+
+        // Trigger download
+        const json = JSON.stringify(manifest, null, 2);
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'player_photos_manifest.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        log('Manifest downloaded as player_photos_manifest.json');
+        log('Place this file in hist_data/ and the dashboard will use it automatically.');
+
+        return manifest;
+    }
+
+    // Expose for manual control — SILENT on page load (v163).
+    // Only log when the user actually invokes fetchPhotoManifest() from the console.
+    // Previously the IIFE logged "Run window.fetchPhotoManifest() to start." on every
+    // page load, which was unnecessary console noise.
+    window.fetchPhotoManifest = run;
+    window.photoManifestStats = stats;
+    window.clearPhotoManifestProgress = function() {
+        localStorage.removeItem(STORAGE_KEY);
+        log('Progress cleared. Re-run fetchPhotoManifest() to start fresh.');
+    };
+    // No auto-run logging — the functions are available silently.
+})();
+
+    </script>
+</body>
+</html>   
