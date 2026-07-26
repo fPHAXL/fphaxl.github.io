@@ -94,6 +94,7 @@ See the [LICENSE](./LICENSE) file for the full legal text.
 -  Zafronix API
 -  Brave AI (Leo)
 -  Z AI (GLM)
+-  WikiMedia
 
 Built with ⚽ and 🗺️ for the 2026 FIFA World Cup.
 
