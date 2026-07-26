@@ -1,0 +1,7867 @@
+// v163_script.js — extracted from 163_accepted_fifa_world_cup_2026.html
+// Main application JavaScript for the FIFA World Cup Dashboard.
+
+
+        // ==========================================
+        // 1. GLOBAL CONFIG & STATE
+        // ==========================================
+        const DATA_URL = 'https://raw.githubusercontent.com/26worldcup/26worldcup.github.io/main/public/data/matches.json';
+        const timelineWrapper = document.getElementById('timeline-wrapper');
+        const timelineTrack = document.getElementById('timeline-track');
+        const centerMarker = document.getElementById('timeline-center-marker');
+        const bracketLeft = document.getElementById('bracket-left');
+        const bracketRight = document.getElementById('bracket-right');
+        
+        let matchesCache = null;
+        let venuesMap = {};
+        let lastFetchTime = 0;
+        const CACHE_DURATION = 30000;
+
+        // Map & D3 Globals
+        let allNodes = [], allLinks = [], uniqueYears = [], selectedYear = null, currentYearIndex = -1, yearColorMap = {};
+        let renderNodes = [], renderLinks = [];
+        
+        // Historical Feature Globals
+        let historicalLayerGroup = L.layerGroup();
+        let currentHistoricalYear = null;
+        let histLookups = { teams: {}, players: {}, stadiums: {} };
+        let currentPopupContent = null; // Store current popup instance
+        let currentStadiumContext = null; // Track originally-clicked stadium for back-button navigation
+        let currentMatchContext = null; // Track current match for player->match back navigation
+
+        const map = L.map('map', { worldCopyJump: false, noWrap: false,  wheelDebounceTime: 20,  wheelPxPerZoomLevel: 30, zoomControl: false }).setView([20, 0], 2,);
+
+        // Country Code Mapping
+        const country3to2 = { 'AUS': 'AU', 'IRN': 'IR', 'IRQ': 'IQ', 'JPN': 'JP', 'JOR': 'JO', 'KOR': 'KR', 'KSA': 'SA', 'UZB': 'UZ', 'ALG': 'DZ', 'CPV': 'CV', 'COD': 'CD', 'CIV': 'CI', 'EGY': 'EG', 'GHA': 'GH', 'MAR': 'MA', 'SEN': 'SN', 'RSA': 'ZA', 'TUN': 'TN', 'CAN': 'CA', 'CUW': 'CW', 'HAI': 'HT', 'MEX': 'MX', 'PAN': 'PA', 'USA': 'US', 'ARG': 'AR', 'BRA': 'BR', 'COL': 'CO', 'ECU': 'EC', 'PAR': 'PY', 'URU': 'UY', 'NZL': 'NZ', 'AUT': 'AT', 'BEL': 'BE', 'BIH': 'BA', 'CRO': 'HR', 'CZE': 'CZ', 'ENG': 'GB', 'FRA': 'FR', 'GER': 'DE', 'NED': 'NL', 'NOR': 'NO', 'POR': 'PT', 'SCO': 'GB', 'ESP': 'ES', 'SWE': 'SE', 'SUI': 'CH', 'TUR': 'TR', 'CHN': 'CN' };
+
+        // ==========================================
+        // 2. UTILITIES
+        // ==========================================
+        // v162: Use a 1x1 transparent GIF data URI as the ultimate flag fallback
+        // instead of 'xx.png' which doesn't exist on flagcdn and throws a 404 error.
+        const FLAG_FALLBACK = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+        const getFlagUrl = (codeOrName) => {
+            if (!codeOrName) return FLAG_FALLBACK;
+            if (codeOrName.length === 2) return `https://flagcdn.com/w40/${codeOrName.toLowerCase()}.png`;
+            const code2 = country3to2[codeOrName.toUpperCase()];
+            if (code2) return `https://flagcdn.com/w40/${code2.toLowerCase()}.png`;
+            const nameMap = { 'USA': 'us', 'Mexico': 'mx', 'Canada': 'ca', 'Brazil': 'br', 'Germany': 'de', 'France': 'fr', 'Argentina': 'ar', 'England': 'gb-eng', 'Spain': 'es', 'Italy': 'it', 'Netherlands': 'nl', 'Portugal': 'pt', 'Belgium': 'be', 'Croatia': 'hr', 'Morocco': 'ma', 'Japan': 'jp', 'South Korea': 'kr', 'Korea Republic': 'kr', 'Australia': 'au', 'Switzerland': 'ch', 'Denmark': 'dk', 'Serbia': 'rs', 'Poland': 'pl', 'Uruguay': 'uy', 'Ecuador': 'ec', 'Senegal': 'sn', 'Qatar': 'qa', 'Saudi Arabia': 'sa', 'Iran': 'ir', 'IR Iran': 'ir', 'Tunisia': 'tn', 'Cameroon': 'cm', 'Ghana': 'gh', 'Costa Rica': 'cr', 'Wales': 'gb-wls', 'DR Congo': 'cd', 'Cape Verde': 'cv', 'Cabo Verde': 'cv', 'Algeria': 'dz', 'Austria': 'at', 'Czechia': 'cz', 'Scotland': 'gb-sct', 'Haiti': 'ht', 'Curaçao': 'cw', 'Panama': 'pa', 'New Zealand': 'nz', 'Iraq': 'iq', 'Jordan': 'jo', 'Uzbekistan': 'uz', 'Turkey': 'tr', 'Türkiye': 'tr', 'Bosnia and Herzegovina': 'ba', 'Norway': 'no', 'Sweden': 'se', 'South Africa': 'za', 'Egypt': 'eg', 'Colombia': 'co', 'Chile': 'cl', 'China': 'cn', "Côte d'Ivoire": 'ci', "Ivory Coast": 'ci' };
+            const code = nameMap[codeOrName];
+            return code ? `https://flagcdn.com/w40/${code}.png` : FLAG_FALLBACK;
+        };
+
+        function initVenues() {
+            if (typeof venuesData !== 'undefined' && venuesData.venues) { venuesMap = venuesData.venues; return true; }
+            return false;
+        }
+
+        function getVenueDetails(venueId) {
+            if (!venueId || !venuesMap[venueId]) return { realName: 'TBD', city: 'TBD', note: 'TBD' };
+            const venue = venuesMap[venueId];
+            return { realName: venue.realName || 'Unknown Stadium', city: venue.city || 'Unknown City', note: venue.note || 'Unknown info' };
+        }
+
+        function getLocalTime(utcString) {
+            const date = new Date(utcString);
+            return date.toLocaleTimeString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        }
+
+        // ==========================================
+        // 3. DATA FETCHING
+        // ==========================================
+        async function fetchMatches() {
+            const now = Date.now();
+            if (matchesCache && (now - lastFetchTime) < CACHE_DURATION) return matchesCache;
+            try {
+                const response = await fetch(`${DATA_URL}?t=${now}`);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const data = await response.json();
+                let finalData = data;
+                if (Array.isArray(data)) finalData = data;
+                else if (data.matches && Array.isArray(data.matches)) finalData = data.matches;
+                else if (data.data && Array.isArray(data.data)) finalData = data.data;
+                else { const key = Object.keys(data).find(k => Array.isArray(data[k])); if (key) finalData = data[key]; }
+                matchesCache = finalData;
+                lastFetchTime = now;
+                return finalData;
+            } catch (error) {
+                console.error('Failed to fetch matches:', error);
+                return matchesCache || [];
+            }
+        }
+
+        // ==========================================
+        // 4. MATCH CARD GENERATION (SHARED)
+        // ==========================================
+        function createMatchCardHTML(match) {
+            const isFinished = match.status === 'finished';
+            const isLive = match.status === 'live';
+            const isScheduled = match.status === 'scheduled';
+            const homeTeam = match.home ? (match.home.name || match.home.code || 'null') : (match.team1 || 'null');
+            const awayTeam = match.away ? (match.away.name || match.away.code || 'null') : (match.team2 || 'null');
+            const homeCode = match.home ? (match.home.code || '') : '';
+            const awayCode = match.away ? (match.away.code || '') : '';
+            const homeScore = match.home ? match.home.score : (match.score1 !== undefined ? match.score1 : null);
+            const awayScore = match.away ? match.away.score : (match.score2 !== undefined ? match.score2 : null);
+            const homePen = match.home ? (match.home.pen || match.home.penalties) : (match.pen1 !== undefined ? match.pen1 : null);
+            const awayPen = match.away ? (match.away.pen || match.away.penalties) : (match.pen2 !== undefined ? match.pen2 : null);
+            const venueId = match.venueId || match.venue;
+            const venueDetails = getVenueDetails(venueId);
+            const stadiumText = `${venueDetails.realName}, ${venueDetails.city}, ${venueDetails.note}`;
+
+            let statusText, statusClass;
+            const EST_STOPPAGE_1H = 4, EST_STOPPAGE_2H = 6, HALFTIME_BREAK = 30, EXTRA_TIME_BREAK = 8;
+            let forceLive = false;
+            if (isScheduled) {
+                const startDate = new Date(match.date);
+                const now = new Date();
+                if (now > startDate) { forceLive = true; }
+            }
+
+            if (isFinished) {
+                if (match.time && typeof match.time === 'string' && match.time.trim() !== '') {
+                    const totalMinutes = parseInt(match.time.replace("'", ""), 10);
+                    if (!isNaN(totalMinutes)) {
+                        if (totalMinutes > 125 && homePen !== null && awayPen !== null) statusText = `FT +${totalMinutes - 90}' ET|PK`;
+                        else if (totalMinutes > 105) statusText = `AET +${totalMinutes - 90}'`;
+                        else if (totalMinutes > 90) statusText = `FT +${totalMinutes - 90}'`;
+                        else if (totalMinutes > 45 && totalMinutes <= 60) statusText = `HT`;
+                        else statusText = 'FT';
+                    } else { statusText = 'FT'; }
+                } else { statusText = 'FT'; }
+                statusClass = 'status-finished';
+            } else if (isLive || forceLive) {
+                const startDate = new Date(match.date);
+                const now = new Date();
+                let elapsedTotal = Math.floor((now - startDate) / 60000);
+                let matchClock = 0, phase = '', isFinishedCalc = false;
+                const MAX_MATCH_DURATION = 90 + HALFTIME_BREAK + 30 + EXTRA_TIME_BREAK + EST_STOPPAGE_1H + EST_STOPPAGE_2H + 10;
+                
+                if (elapsedTotal > MAX_MATCH_DURATION) { isFinishedCalc = true; statusText = "FT"; statusClass = 'status-finished'; }
+                else {
+                    if (elapsedTotal < 45 + EST_STOPPAGE_1H + 2) { matchClock = elapsedTotal; phase = '1H'; }
+                    else if (elapsedTotal >= 45 + EST_STOPPAGE_1H && elapsedTotal < 60 + EST_STOPPAGE_1H) { statusText = "HT"; statusClass = 'status-live'; }
+                    else if (elapsedTotal >= 60 + EST_STOPPAGE_1H && elapsedTotal < 105 + EST_STOPPAGE_1H + EST_STOPPAGE_2H + 5) { matchClock = elapsedTotal - HALFTIME_BREAK + EST_STOPPAGE_1H; phase = '2H'; }
+                    else if (elapsedTotal >= 105 + EST_STOPPAGE_1H + EST_STOPPAGE_2H && elapsedTotal < 110 + EST_STOPPAGE_1H + EST_STOPPAGE_2H) { statusText = "ET Break"; statusClass = 'status-live'; }
+                    else if (elapsedTotal >= 110 + EST_STOPPAGE_1H + EST_STOPPAGE_2H) {
+                        matchClock = elapsedTotal - HALFTIME_BREAK - EXTRA_TIME_BREAK + 3;
+                        let etMinute = matchClock - 90;
+                        if (etMinute < 1) etMinute = 1;
+                        if (etMinute >= 15 && etMinute < 16) { statusText = "ET HT"; statusClass = 'status-live'; }
+                        else { statusText = `ET ${etMinute}'`; statusClass = 'status-live'; }
+                    }
+                    if (phase === '1H' || phase === '2H') { statusText = `${matchClock}'`; statusClass = 'status-live'; }
+                    if (statusText && !statusText.startsWith("HT") && !statusText.startsWith("ET") && !statusText.startsWith("Pens") && !isFinishedCalc) { statusText = "LIVE " + statusText; }
+                }
+            } else {
+                const matchDate = new Date(match.date);
+                const now = new Date();
+                const today = new Date(now); today.setHours(0, 0, 0, 0);
+                const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+                const matchDay = new Date(matchDate); matchDay.setHours(0, 0, 0, 0);
+                let timeStr = "TBD";
+                if (!isNaN(matchDate.getTime())) { timeStr = matchDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+                if (matchDay.getTime() === today.getTime()) { statusText = `Today, ${timeStr}`; statusClass = 'status-today'; }
+                else if (matchDay.getTime() === tomorrow.getTime()) { statusText = `Tmrrw, ${timeStr}`; statusClass = 'status-tomorrow'; }
+                else { const dateStr = matchDay.toLocaleDateString([], { month: 'short', day: 'numeric' }); statusText = `${dateStr}, ${timeStr}`; statusClass = 'status-scheduled'; }
+            }
+
+            let homePenClass = 'pen-small', awayPenClass = 'pen-small';
+            if (isFinished && homePen !== null && awayPen !== null) {
+                if (homePen > awayPen) { homePenClass = 'pen-big'; awayPenClass = 'pen-small'; }
+                else if (awayPen > homePen) { homePenClass = 'pen-small'; awayPenClass = 'pen-big'; }
+                else { homePenClass = 'pen-tie'; awayPenClass = 'pen-tie'; }
+            }
+
+            const stageName = match.stage === 'r32' ? 'Round of 32' : match.stage === 'qf' ? 'Quarter-Final' : match.stage === 'sf' ? 'Semi-Final' : match.stage === 'final' ? 'Final' : match.stage === '3rd' ? '3rd Place' : 'Group';
+            let homeClass = 'score-small', awayClass = 'score-small';
+            if (isFinished && homeScore !== null && awayScore !== null) {
+                if (homeScore > awayScore) homeClass = 'score-big';
+                else if (awayScore > homeScore) awayClass = 'score-big';
+                else { homeClass = 'score-tie'; awayClass = 'score-tie'; }
+            }
+
+            const renderScoreBlock = (mainScore, penScore, penClass, mainClass) => {
+                const mainDisplay = mainScore !== null ? mainScore : '-';
+                const penDisplay = (penScore !== null && penScore !== undefined) ? `<span class="pen-box"><span class="pen-num ${penClass}">${penScore}</span></span>` : '<span style="height:0rem;"></span>';
+                return `<span style="display:flex; flex-direction:column; align-items:center; line-height:1;"> <span class="${mainClass}">${mainDisplay}</span> ${penDisplay} </span>`;
+            };
+
+            return ` <div class="card-top"> <span>#${match.n}</span> <span>${stageName}</span> <span class="${statusClass}">${statusText}</span> </div> <div class="card-middle"> <div class="team-box"> <img src="${getFlagUrl(homeCode || homeTeam)}" class="team-flag" alt="${homeTeam}"> <span>${homeTeam}</span> </div> <div class="score-box"> ${renderScoreBlock(homeScore, homePen, homePenClass, homeClass)} <span style="color:#555; font-size:1rem;">:</span> ${renderScoreBlock(awayScore, awayPen, awayPenClass, awayClass)} </div> <div class="team-box right"> <span>${awayTeam}</span> <img src="${getFlagUrl(awayCode || awayTeam)}" class="team-flag" alt="${awayTeam}"> </div> </div> <div class="card-bottom">${stadiumText}</div> `;
+        }
+
+        // ==========================================
+        // 5. TIMELINE LOGIC
+        // ==========================================
+        function renderTimeline(matches) {
+            timelineTrack.innerHTML = '';
+            if (!matches || matches.length === 0) { timelineTrack.innerHTML = '<div style="color:#666; padding:20px;">No match data available</div>'; return; }
+            matches.sort((a, b) => new Date(a.date) - new Date(b.date));
+            matches.forEach(match => {
+                const card = document.createElement('div');
+                card.className = 'match-card';
+                card.id = `match-${match.n}`;
+                card.dataset.date = match.date;
+                card.innerHTML = createMatchCardHTML(match);
+                card.addEventListener('click', () => scrollToMatch(card));
+                timelineTrack.appendChild(card);
+            });
+            scrollToCurrentTime();
+        }
+
+        function scrollToMatch(cardElement) {
+            const wrapper = document.getElementById('timeline-wrapper');
+            const cardCenter = cardElement.offsetLeft + (cardElement.offsetWidth / 2);
+            const wrapperCenter = wrapper.offsetWidth / 2;
+            wrapper.scrollTo({ left: cardCenter - wrapperCenter, behavior: 'smooth' });
+        }
+
+        function scrollToCurrentTime() {
+            if (!matchesCache) return;
+            const now = new Date();
+            const cards = document.querySelectorAll('#timeline-track .match-card');
+            let liveCard = null, lastFinishedCard = null, nextUpcomingCard = null;
+            cards.forEach(card => {
+                card.classList.remove('active');
+                const matchDate = new Date(card.dataset.date);
+                const statusEl = card.querySelector('.card-top span:last-child');
+                const isLive = statusEl && statusEl.classList.contains('status-live');
+                if (isLive) liveCard = card;
+                if (matchDate <= now) lastFinishedCard = card;
+                else if (!nextUpcomingCard) nextUpcomingCard = card;
+            });
+            const activeCard = liveCard || lastFinishedCard || nextUpcomingCard;
+            if (activeCard) {
+                activeCard.classList.add('active');
+                activeCard.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+            }
+        }
+
+        // ==========================================
+        // 6. BRACKET LOGIC
+        // ==========================================
+        const bracketConfig = {
+            left: [ { stage: 'Round of 32', matches: [74, 77, 73, 75, 83, 84, 81, 82] }, { stage: 'Round 16', matches: [89, 90, 93, 94] }, { stage: 'Quarterfinals', matches: [97, 98] }, { stage: 'Semifinals', matches: [101] }, { stage: 'Final', matches: [104] }, { stage: 'Third-Place', matches: [103] } ],
+            right: [ { stage: 'Round of 32', matches: [76, 78, 79, 80, 86, 88, 85, 87] }, { stage: 'Round 16', matches: [91, 92, 95, 96] }, { stage: 'Quarterfinals', matches: [99, 100] }, { stage: 'Semifinals', matches: [102] }, { stage: 'Final', matches: [104] }, { stage: 'Third-Place', matches: [103] } ]
+        };
+
+        function renderBrackets() {
+            if (!matchesCache) return;
+            const getMatch = (n) => matchesCache.find(m => m.n === n);
+            
+            // Render Left
+            bracketLeft.innerHTML = '';
+            bracketConfig.left.forEach(group => {
+                const stageCard = document.createElement('div'); stageCard.className = 'stage-card';
+                const title = document.createElement('div'); title.className = 'stage-title'; title.textContent = group.stage; stageCard.appendChild(title);
+                group.matches.forEach(matchNum => {
+                    const match = getMatch(matchNum);
+                    if (match) {
+                        const card = document.createElement('div'); card.className = 'match-card'; card.id = `bracket-left-match-${match.n}`;
+                        card.innerHTML = createMatchCardHTML(match);
+                        card.addEventListener('click', () => scrollToMatch(document.getElementById(`match-${match.n}`)));
+                        stageCard.appendChild(card);
+                    }
+                });
+                bracketLeft.appendChild(stageCard);
+            });
+
+            // Render Right
+            bracketRight.innerHTML = '';
+            bracketConfig.right.forEach(group => {
+                const stageCard = document.createElement('div'); stageCard.className = 'stage-card';
+                const title = document.createElement('div'); title.className = 'stage-title'; title.textContent = group.stage; stageCard.appendChild(title);
+                group.matches.forEach(matchNum => {
+                    const match = getMatch(matchNum);
+                    if (match) {
+                        const card = document.createElement('div'); card.className = 'match-card'; card.id = `bracket-right-match-${match.n}`;
+                        card.innerHTML = createMatchCardHTML(match);
+                        card.addEventListener('click', () => scrollToMatch(document.getElementById(`match-${match.n}`)));
+                        stageCard.appendChild(card);
+                    }
+                });
+                bracketRight.appendChild(stageCard);
+            });
+        }
+
+        // ==========================================
+        // 7. MAP & D3 VISUALIZATION
+        // ==========================================
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution: '&copy; OpenStreetMap &copy; CARTO', subdomains: 'abcd', maxZoom: 19 }).addTo(map);
+        const svg = d3.select(map.getPanes().overlayPane).append('svg');
+        svg.append('defs').append('filter').attr('id', 'glow-filter').attr('x', '-50%').attr('y', '-50%').attr('width', '200%').attr('height', '200%') .html(`<feGaussianBlur stdDeviation="8" result="coloredBlur"/><feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>`);
+        const g = svg.append('g').attr('class', 'leaflet-zoom-hide');
+        const successRadius = { "Champion": 18, "Final": 16, "Semi-Final": 14, "Quarter-Final": 10.85, "Round 16": 8.25, "Round 32": 6.5, "Group": 5, "Host": 21.25, "Host-Centenary": 10 };
+        const specialColors = { "Host": "#00FF00", "Host-Centenary": "#00FF00", "Champion": "#FFD700", "Final": "#C0C0C0", "Semi-Final": "#CD7F32", "Quarter-Final": "#FF6F92", "Round 32": "#FBCEFF" };
+        const yearColorScale = d3.scaleOrdinal().domain(d3.range(1930, 2030)).range(d3.quantize(d3.interpolateRainbow, 97));
+
+        function processData() {
+            allNodes = []; allLinks = [];
+            if (typeof fifaWorldCupParticipants === 'undefined') return;
+            const byYear = d3.group(fifaWorldCupParticipants, d => d.year);
+            uniqueYears = Array.from(byYear.keys()).sort();
+            currentYearIndex = -1;
+            byYear.forEach((participants, year) => {
+                const hosts = participants.filter(p => p.Success === "Host");
+                const vibrantColor = yearColorScale(year);
+                yearColorMap[year] = vibrantColor;
+                participants.forEach(p => {
+                    let r = successRadius[p.Success] || successRadius["Group"];
+                    let c = specialColors[p.Success] || vibrantColor;
+                    allNodes.push({ ...p, radius: r, color: c, yearColor: vibrantColor });
+                    if (hosts.length > 0 && p.Success !== "Host") {
+                        hosts.forEach(host => { if (p.id !== host.id) { allLinks.push({ source: host, target: p, year: year, color: vibrantColor }); } });
+                    }
+                });
+            });
+            initYearFilter();
+            filterAndDraw();
+        }
+
+        function initYearFilter() {
+            const container = document.getElementById('year-filter-container');
+            container.innerHTML = '';
+            uniqueYears.forEach((year, index) => {
+                const el = document.createElement('div');
+                el.className = 'year-option';
+                el.textContent = year;
+                el.dataset.year = year;
+                el.dataset.index = index;
+                el.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (selectedYear === year) resetFilter();
+                    else { currentYearIndex = index; selectedYear = year; handleYearChange(year); }
+                });
+                container.appendChild(el);
+            });
+            container.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                if (e.deltaY > 50) changeYear(1); else if (e.deltaY < -50) changeYear(-1);
+            }, { passive: false });
+            container.addEventListener('click', () => { if (selectedYear !== null) resetFilter(); });
+            updateFisheyeUI();
+        }
+
+        function changeYear(direction) {
+            let newIndex = currentYearIndex === -1 ? (direction > 0 ? 0 : uniqueYears.length - 1) : currentYearIndex + direction;
+            if (newIndex < 0) newIndex = 0; if (newIndex >= uniqueYears.length) newIndex = uniqueYears.length - 1;
+            if (newIndex !== currentYearIndex) {
+                currentYearIndex = newIndex;
+                selectedYear = uniqueYears[currentYearIndex];
+                handleYearChange(selectedYear);
+            }
+        }
+
+        function resetFilter() {
+            selectedYear = null; currentYearIndex = -1;
+            updateFisheyeUI();
+            filterAndDraw();
+            // Reset Historical
+            historicalLayerGroup.clearLayers();
+            document.getElementById('history-bar').classList.remove('visible');
+            document.getElementById('news-ticker').classList.remove('visible');
+            document.getElementById('bracket-toggle-btn').classList.remove('visible');
+            document.getElementById('leaderboard-btn').classList.remove('year-active');
+            document.getElementById('compare-btn').classList.remove('year-active');
+            document.getElementById('search-btn').classList.remove('year-active');
+            document.getElementById('replay-btn').classList.remove('visible');
+            // Rule 1: update overlay floor when icons shift back
+            if (typeof updateOverlayFloor === 'function') updateOverlayFloor();
+            toggleBracketTree(false);
+            closeLeaderboard();
+            closeCompare();
+            closeSearch();
+            hideReplayControls();
+            const cs = document.getElementById('champion-stars'); if (cs) cs.classList.remove('visible');
+            closeStandingsOverlay();
+            currentHistoricalYear = null;
+        }
+
+        async function handleYearChange(year) {
+            selectedYear = year;
+            updateFisheyeUI();
+            filterAndDraw(); // Core D3
+
+            if (year >= 1930) {
+                try { await loadHistoricalData(year); } catch (e) { console.warn(e.message); }
+                // If bracket tree is currently visible, re-render it with the new year's data
+                const bkContainer = document.getElementById('bracket-svg-container');
+                if (bkContainer && bkContainer.classList.contains('visible')) {
+                    toggleBracketTree(true);
+                }
+            } else {
+                historicalLayerGroup.clearLayers();
+                document.getElementById('history-bar').classList.remove('visible');
+                document.getElementById('news-ticker').classList.remove('visible');
+                document.getElementById('bracket-toggle-btn').classList.remove('visible');
+                document.getElementById('leaderboard-btn').classList.remove('year-active');
+            document.getElementById('compare-btn').classList.remove('year-active');
+            document.getElementById('search-btn').classList.remove('year-active');
+            document.getElementById('replay-btn').classList.remove('visible');
+                // Rule 1: update overlay floor when icons shift back
+                if (typeof updateOverlayFloor === 'function') updateOverlayFloor();
+                toggleBracketTree(false);
+                closeLeaderboard();
+                closeCompare();
+                closeSearch();
+                hideReplayControls();
+                const cs = document.getElementById('champion-stars'); if (cs) cs.classList.remove('visible');
+                closeStandingsOverlay();
+                currentHistoricalYear = null;
+            }
+        }
+
+        function updateFisheyeUI() {
+            const options = document.querySelectorAll('.year-option');
+            if (currentYearIndex === -1) {
+                options.forEach(opt => { opt.style.transform = 'scale(0.8)'; opt.style.fontSize = '0.9rem'; opt.style.opacity = '0.5'; opt.style.color = '#555'; opt.style.textShadow = 'none'; opt.classList.remove('accented'); });
+                return;
+            }
+            options.forEach(opt => {
+                const index = parseInt(opt.dataset.index);
+                const year = opt.dataset.year;
+                const distance = Math.abs(index - currentYearIndex);
+                let scale, fontSize, opacity, color, shadow;
+                if (distance === 0) { scale = 1.6; fontSize = '0.8rem'; opacity = 1; color = '#ffffff'; shadow = `0 0 10px ${yearColorMap[year]}, 0 0 20px ${yearColorMap[year]}`; opt.classList.add('accented'); }
+                else if (distance === 1) { scale = 1; fontSize = '1.3rem'; opacity = 0.4; color = '#aaa'; shadow = 'none'; opt.classList.remove('accented'); }
+                else if (distance === 2) { scale = 0.9; fontSize = '1rem'; opacity = 0.4; color = '#666'; shadow = 'none'; opt.classList.remove('accented'); }
+                else { scale = 0.7; fontSize = '0.8rem'; opacity = 0.2; color = '#444'; shadow = 'none'; opt.classList.remove('accented'); }
+                opt.style.transform = `scale(${scale})`; opt.style.fontSize = fontSize; opt.style.opacity = opacity; opt.style.color = color; opt.style.textShadow = shadow;
+            });
+        }
+
+        function generateDynamicElements(nodes, links) {
+            renderNodes = []; renderLinks = [];
+            const worldWidthPixels = 256 * Math.pow(2, map.getZoom());
+            const mapWidthPixels = map.getSize().x;
+            const copiesNeeded = Math.ceil(mapWidthPixels / worldWidthPixels) + 2;
+            for (let i = -copiesNeeded; i <= copiesNeeded; i++) {
+                const lngOffset = i * 360;
+                nodes.forEach(n => renderNodes.push({ ...n, lng: n.lng + lngOffset, worldCopyIndex: i }));
+                links.forEach(l => renderLinks.push({ source: { ...l.source, lng: l.source.lng + lngOffset }, target: { ...l.target, lng: l.target.lng + lngOffset }, worldCopyIndex: i }));
+            }
+        }
+
+        function draw() {
+            const bounds = map.getBounds();
+            const topLeft = map.latLngToLayerPoint(bounds.getNorthWest());
+            const bottomRight = map.latLngToLayerPoint(bounds.getSouthEast());
+            svg.attr('width', bottomRight.x - topLeft.x).attr('height', bottomRight.y - topLeft.y).style('left', topLeft.x + 'px').style('top', topLeft.y + 'px');
+            g.attr('transform', `translate(${-topLeft.x},${-topLeft.y})`);
+            
+            g.selectAll('.host-line').data(renderLinks).join('path').attr('class', 'host-line')
+                .attr('d', d => { const x1 = map.latLngToLayerPoint([d.source.lat, d.source.lng]).x; const y1 = map.latLngToLayerPoint([d.source.lat, d.source.lng]).y; const x2 = map.latLngToLayerPoint([d.target.lat, d.target.lng]).x; const y2 = map.latLngToLayerPoint([d.target.lat, d.target.lng]).y; return `M${x1},${y1} L${x2},${y2}`; })
+                .attr('stroke', '#fff').attr('stroke-width', selectedYear ? 0.7 : 0.5).attr('stroke-opacity', selectedYear ? 0.8 : 0.4).attr('stroke-linecap', 'round');
+
+            const tooltip = document.getElementById('map-tooltip');
+            g.selectAll('circle').data(renderNodes).join('circle')
+                .attr('cx', d => map.latLngToLayerPoint([d.lat, d.lng]).x)
+                .attr('cy', d => map.latLngToLayerPoint([d.lat, d.lng]).y)
+                .attr('r', d => d.radius)
+                .attr('fill', d => d.color)
+                .attr('fill-opacity', selectedYear ? 0.8 : 0.5)
+                .attr('stroke', '#fff').attr('stroke-width', 1.125)
+                .on('mouseover', function(event, d) {
+                    const allHostsForYear = allNodes.filter(n => n.year === d.year && n.Success === "Host");
+                    const hostNames = allHostsForYear.map(h => h.country).join(" & ") || "N/A";
+                    tooltip.innerHTML = `<div class="tt-title">${d.year} World Cup</div><div class="tt-row"><span class="tt-label">Host${allHostsForYear.length > 1 ? 's' : ''}:</span><span class="tt-value">${hostNames}</span></div><div class="tt-row"><span class="tt-label">Team:</span><span class="tt-value">${d.name}</span></div><div class="tt-row"><span class="tt-label">Result:</span><span class="tt-value">${d.Success}</span></div>`;
+                    tooltip.classList.add('visible');
+                    d3.select(this).attr('stroke', d.color).attr('stroke-width', 2).attr('fill-opacity', 1).attr('filter', 'url(#glow-filter)');
+                })
+                .on('mousemove', function(event) { tooltip.style.left = event.pageX + 'px'; tooltip.style.top = event.pageY + 'px'; })
+                .on('mouseout', function() { tooltip.classList.remove('visible'); d3.select(this).attr('stroke', '#fff').attr('stroke-width', 1.5).attr('fill-opacity', selectedYear ? 0.9 : 0.6).attr('filter', null); })
+                .on('click', (e, d) => { L.popup().setLatLng([d.lat, d.lng]).setContent(`<strong>${d.name}</strong><br>Year: ${d.year}<br>Success: ${d.Success}`).openOn(map); });
+
+            // --- Champion stars: draw golden stars around champion circles ---
+            // Stars are distributed evenly around the full 360° of the circle.
+            // They scale with zoom (radius-based) and sit just outside the circle edge.
+            const championNodes = renderNodes.filter(d => d.Success === 'Champion' && d.Star && parseInt(d.Star, 10) > 0);
+            const starData = [];
+            championNodes.forEach(d => {
+                const starCount = parseInt(d.Star, 10);
+                const cx = map.latLngToLayerPoint([d.lat, d.lng]).x;
+                const cy = map.latLngToLayerPoint([d.lat, d.lng]).y;
+                const r = d.radius;
+                const starSize = Math.max(3, r * 0.35);
+                const arcRadius = r + starSize + 2; // just outside the circle edge
+                // Distribute stars evenly around the full 360°
+                // Start at top (-90°) and spread clockwise
+                const angleStep = 360 / starCount;
+                const startAngle = -90; // top
+                for (let i = 0; i < starCount; i++) {
+                    const angle = (startAngle + i * angleStep) * Math.PI / 180;
+                    starData.push({
+                        x: cx + arcRadius * Math.cos(angle),
+                        y: cy + arcRadius * Math.sin(angle),
+                        size: starSize,
+                        id: d.id + '_star_' + i
+                    });
+                }
+            });
+            // Draw stars as text elements (★ character) for simplicity and scalability
+            g.selectAll('.champion-star').data(starData, d => d.id).join('text')
+                .attr('class', 'champion-star')
+                .attr('x', d => d.x)
+                .attr('y', d => d.y)
+                .attr('font-size', d => d.size * 2)
+                .attr('text-anchor', 'middle')
+                .attr('dominant-baseline', 'central')
+                .attr('fill', '#FFD700')
+                .attr('stroke', '#b8860b')
+                .attr('stroke-width', 0.5)
+                .style('filter', 'drop-shadow(0 0 4px rgba(255,215,0,0.8))')
+                .style('pointer-events', 'none')
+                .text('★');
+        }
+
+        function filterAndDraw() {
+            let filteredNodes = allNodes, filteredLinks = allLinks;
+            if (selectedYear !== null) {
+                filteredNodes = allNodes.filter(n => n.year === selectedYear);
+                filteredLinks = allLinks.filter(l => l.year === selectedYear);
+            }
+            generateDynamicElements(filteredNodes, filteredLinks);
+            draw();
+        }
+
+        // ==========================================
+        // 8. STADIUM MARKERS (CORE 2026)
+        // ==========================================
+        const stadiumSvgString = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32"><path fill="#FFD700" stroke="#000" stroke-width="0.5" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-5-9c.83 0 1.5-.67 1.5-1.5S7.83 8 7 8s-1.5.67-1.5 1.5S6.17 11 7 11zm3.5 3c-.83 0-1.5-.67-1.5-1.5S9.67 13 10.5 13s1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm3.5-3c-.83 0-1.5-.67-1.5-1.5S13.17 8 14 8s1.5.67 1.5 1.5-.67 1.5-1.5 1.5zM12 16c-2.03 0-3.8-1.11-4.75-2.75.17-.25.39-.48.64-.66.69 1.19 1.97 2.01 3.46 2.01 1.49 0 2.77-.82 3.46-2.01.25.18.47.41.64.66C15.8 14.89 14.03 16 12 16z"/></svg>`;
+        const stadiumIcon = L.icon({ iconUrl: 'img/Stadium.svg', iconSize: [28, 28], iconAnchor: [20, 20], popupAnchor: [0, -32] });
+
+        function addStadiumMarkers() {
+            if (!venuesMap || Object.keys(venuesMap).length === 0) return;
+            function getMatchesForVenue(venueId, matches) {
+                if (!matches || matches.length === 0) return '<div style="text-align:center; color:#888; padding:10px;">No matches</div>';
+                const venueMatches = matches.filter(m => (m.venueId || m.venue) === venueId);
+                if (venueMatches.length === 0) return '<div style="text-align:center; color:#888; padding:10px;">No matches</div>';
+                venueMatches.sort((a, b) => new Date(a.date) - new Date(b.date));
+                let html = '<div class="stadium-match-list">';
+                venueMatches.forEach(m => {
+                    const dateObj = new Date(m.date);
+                    const dateStr = dateObj.toLocaleDateString([], { month: 'short', day: 'numeric' });
+                    const timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    const homeName = m.home ? (m.home.name || m.home.code) : (m.team1 || 'null');
+                    const awayName = m.away ? (m.away.name || m.away.code) : (m.team2 || 'null');
+                    const homeScore = m.home ? m.home.score : (m.score1 !== undefined ? m.score1 : '-');
+                    const awayScore = m.away ? m.away.score : (m.score2 !== undefined ? m.score2 : '-');
+                    const isFinished = m.status === 'finished';
+                    const scoreDisplay = isFinished ? ` <span class="stadium-match-score">${homeScore}:${awayScore}</span>` : '';
+                    html += `<div class="stadium-match-item"><span class="stadium-match-meta">${dateStr}</span><span class="stadium-match-teams">${homeName}${scoreDisplay} vs ${awayName}</span><span class="stadium-match-meta">${timeStr}</span></div>`;
+                });
+                html += '</div>';
+                return html;
+            }
+
+            const zoom = map.getZoom();
+            const worldWidthPixels = 256 * Math.pow(2, zoom);
+            const mapWidthPixels = map.getSize().x;
+            const copiesNeeded = Math.ceil(mapWidthPixels / worldWidthPixels) + 2;
+
+            Object.values(venuesMap).forEach(venue => {
+                if (!venue.lat || !venue.lon) return;
+                for (let i = -copiesNeeded; i <= copiesNeeded; i++) {
+                    const lngOffset = i * 360;
+                    const marker = L.marker([venue.lat, venue.lon + lngOffset], { icon: stadiumIcon });
+                    const matchListHtml = getMatchesForVenue(venue.id, matchesCache);
+                    const popupContent = `<div class="stadium-popup-content"><div class="stadium-name">${venue.realName || venue.name}</div><div class="stadium-city">${venue.city}</div><div class="stadium-capacity">Cap: ${venue.capacity ? venue.capacity.toLocaleString() : 'N/A'}</div><div class="stadium-matches-header">Matches</div>${matchListHtml}</div><div class="stadium-info">${venue.note}</div>`;
+                    marker.bindPopup(popupContent, { className: 'stadium-tooltip', closeButton: false, direction: 'auto', maxWidth: 250, minWidth: 200, autoClose: true, closeOnClick: true, autoPan: false, offset: [10, 20] });
+                    
+                    let hoverTimer = null;
+                    marker.on('mouseover', function() {
+                        const markerRef = this;
+                        if (hoverTimer) clearTimeout(hoverTimer);
+                        hoverTimer = setTimeout(() => { markerRef.openPopup(); }, 300);
+                    });
+                    marker.on('mouseout', function() { if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; } this.closePopup(); });
+                    marker.addTo(map);
+                }
+            });
+        }
+
+        // ==========================================
+        // 8.1 BRACKET AUTO HIDE/PIN
+        // ==========================================
+        const BRACKET_EDGE_THRESHOLD = 50;
+        document.addEventListener('mousemove', (e) => {
+            const leftBracket = document.getElementById('bracket-left');
+            const rightBracket = document.getElementById('bracket-right');
+            if (!leftBracket.classList.contains('pinned') && e.clientX < 50) { leftBracket.classList.add('force-show'); } else if (!leftBracket.classList.contains('pinned')) { leftBracket.classList.remove('force-show'); }
+            if (!rightBracket.classList.contains('pinned') && e.clientX > window.innerWidth - 50) { rightBracket.classList.add('force-show'); } else if (!rightBracket.classList.contains('pinned')) { rightBracket.classList.remove('force-show'); }
+        });
+        if ('ontouchstart' in window) { document.querySelectorAll('.bracket-container').forEach(el => { el.classList.add('force-show'); }); }
+        const leftBracket = document.getElementById('bracket-left');
+        const rightBracket = document.getElementById('bracket-right');
+        function togglePin(e, element) {
+            e.stopPropagation();
+            element.classList.toggle('pinned');
+            // Re-render bracket tree if visible (space changed due to pin/unpin)
+            const bc = document.getElementById('bracket-svg-container');
+            if (bc && bc.classList.contains('visible')) {
+                setTimeout(() => toggleBracketTree(true), 450); // wait for CSS transition
+            }
+        }
+        leftBracket.addEventListener('click', (e) => togglePin(e, leftBracket));
+        rightBracket.addEventListener('click', (e) => togglePin(e, rightBracket));
+
+        // ==========================================
+        // 9. HISTORICAL DATA LOADER 
+        // ==========================================
+    // ==========================================
+// 9. HISTORICAL DATA LOADER (MERGED & FIXED)
+// ==========================================
+
+async function loadHistoricalData(year) {
+    const varName = `FWCD_${year}`;
+    
+    // LRU Cache: track access order, evict oldest when > 4 years in memory
+    // (excluding the current year being loaded)
+    if (!window._lruYearOrder) window._lruYearOrder = [];
+    // Remove year from its current position (if exists)
+    const idx = window._lruYearOrder.indexOf(year);
+    if (idx !== -1) window._lruYearOrder.splice(idx, 1);
+    window._lruYearOrder.push(year); // Add to end (most recently used)
+    
+    // Evict oldest years if we have more than 4 loaded (excluding years in the LRU list that aren't actually loaded)
+    const MAX_CACHED_YEARS = 4;
+    while (window._lruYearOrder.length > MAX_CACHED_YEARS) {
+        const evictYear = window._lruYearOrder.shift(); // Remove from front (least recently used)
+        const evictVar = `FWCD_${evictYear}`;
+        if (window[evictVar] && evictYear !== year) {
+            console.log(`🗑️ LRU evicting ${evictVar} (freed memory)`);
+            delete window[evictVar];
+        }
+    }
+    
+    // 1. Check Cache (might still be loaded if within LRU window)
+    if (window[varName]) {
+        console.log(`✅ ${varName} found in cache.`);
+        initHistoricalFeature(year, window[varName]);
+        return Promise.resolve();
+    }
+    
+    // 2. Load Script if not cached
+    return new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = `hist_data/${varName}.js`;
+        
+        const onReady = () => {
+            console.log(`✅ ${varName} script executed & ready.`);
+            window.removeEventListener(`${varName}_ready`, onReady);
+            
+            if (window[varName]) {
+                initHistoricalFeature(year, window[varName]);
+                resolve();
+            } else {
+                reject(new Error(`${varName} variable missing after load`));
+            }
+        };
+        
+        window.addEventListener(`${varName}_ready`, onReady);
+        
+        script.onerror = (e) => {
+            window.removeEventListener(`${varName}_ready`, onReady);
+            console.error(`❌ Failed to load ${varName}.js`);
+            reject(new Error(`Script load failed: ${varName}.js`));
+        };
+        
+        document.head.appendChild(script);
+    });
+}
+
+function initHistoricalFeature(year, data) {
+    console.log(`--- Initializing Historical Data for ${year} ---`);
+    
+    if (!data || !data.matches_FULL) {
+        console.error(`❌ Invalid data structure for ${year}. Missing matches_FULL.`);
+        return;
+    }
+
+    // 1. Reset State
+    histLookups = { teams: {}, players: {}, stadiums: {} };
+    currentStadiumContext = null;
+    currentMatchContext = null;
+    historicalLayerGroup.clearLayers();
+    
+    // 2. Extract Unique Stadiums (Deduplicate by ID) AND collect their matches
+    const stadiumsMap = new Map();
+    
+    data.matches_FULL.forEach(match => {
+        // Handle both 'stadiumFULLDetails' and 'stadiumFullDetails' just in case
+        const sDetails = match.stadiumFULLDetails || match.stadiumFullDetails;
+        
+        // Build a normalized match object for the stadium's match list
+        const matchObj = {
+            id: match.id || `${match.homeTeam || 'x'}-${match.awayTeam || 'x'}-${match.date || ''}`,
+            homeTeam: match.homeTeam,
+            awayTeam: match.awayTeam,
+            homeScore: match.homeScore,
+            awayScore: match.awayScore,
+            // Penalty fields (try all possible field name formats from data)
+            homePen: match.homePen != null ? match.homePen : (match.pen1 != null ? match.pen1 : (match.penalties ? match.penalties.home : (match.home ? (match.home.pen || match.home.penalties) : null))),
+            awayPen: match.awayPen != null ? match.awayPen : (match.pen2 != null ? match.pen2 : (match.penalties ? match.penalties.away : (match.away ? (match.away.pen || match.away.penalties) : null))),
+            penalties: match.penalties || null,
+            winner: match.winner || null,
+            date: match.date,
+            stage: match.stage || '',
+            stageRaw: match.stageRaw || '',
+            stadium: sDetails ? (sDetails.name || '') : '',
+            stadiumId: sDetails ? (sDetails.id || sDetails.name || '') : '',
+            weather: match.weather || null,
+            goals: match.goals || [],
+            cards: match.cards || [],
+            substitutions: match.substitutions || [],
+            lineups: match.lineups || { home: [], away: [] },
+            formations: match.formations || null,
+            referee: match.referee || null,
+            statistics: match.statistics || null
+        };
+        
+        if (sDetails && sDetails.coords) {
+            const id = sDetails.id || sDetails.name || 'unknown';
+            const lat = parseFloat(sDetails.coords.lat);
+            const lng = parseFloat(sDetails.coords.long != null ? sDetails.coords.long : sDetails.coords.lng);
+            
+            if (!isNaN(lat) && !isNaN(lng)) {
+                if (!stadiumsMap.has(id)) {
+                    stadiumsMap.set(id, {
+                        ...sDetails,
+                        coords: { lat, lng },
+                        matches: []
+                    });
+                }
+                stadiumsMap.get(id).matches.push(matchObj);
+            } else {
+                console.warn(`⚠️ Invalid coords for stadium ${id}:`, sDetails.coords);
+            }
+        }
+    });
+
+    console.log(`📍 Found ${stadiumsMap.size} unique stadiums.`);
+
+    // 2b. Build teams lookup from teams_summary (has .iso for flags) — same as index.html
+    if (Array.isArray(data.teams_summary)) {
+        data.teams_summary.forEach(t => { histLookups.teams[t.name] = t; });
+        console.log(`✅ Populated ${Object.keys(histLookups.teams).length} teams from teams_summary.`);
+    } else if (Array.isArray(data.teams_FULL)) {
+        // Fallback: use teams_FULL if teams_summary not present
+        data.teams_FULL.forEach(team => {
+            const tName = team.name || team.country;
+            if (tName && !histLookups.teams[tName]) histLookups.teams[tName] = team;
+        });
+        console.log(`⚠️ teams_summary missing — used teams_FULL fallback (${Object.keys(histLookups.teams).length} teams).`);
+    }
+
+    // 2c. Build players lookup from players_FULL (has detailed bios) — same as index.html
+    if (Array.isArray(data.players_FULL)) {
+        data.players_FULL.forEach(p => {
+            if (p.name) histLookups.players[p.name] = p;
+        });
+        console.log(`✅ Populated ${Object.keys(histLookups.players).length} players from players_FULL.`);
+    }
+
+    // 2d. Store standings & trivia for the history-bar click → standings overlay and news ticker
+    histLookups.standings = data.standings || null;
+    histLookups.trivia = Array.isArray(data.trivia) ? data.trivia : [];
+    histLookups.currentYear = year;
+
+    // 2e. Store all matches_FULL for team-match lookups (knockout path wiring, match cards)
+    histLookups.allMatches = Array.isArray(data.matches_FULL) ? data.matches_FULL : [];
+
+    // 2f. Store bracket data for the historical bracket tree
+    histLookups.bracket = data.bracket || null;
+
+    // 3. Create Markers — replicated across world copies (same as D3 elements & 2026 stadium markers)
+    let markersAdded = 0;
+    const bounds = [];
+
+    // Compute how many world copies are needed to fill the current viewport
+    const zoom = map.getZoom();
+    const worldWidthPixels = 256 * Math.pow(2, zoom);
+    const mapWidthPixels = map.getSize().x;
+    const copiesNeeded = Math.ceil(mapWidthPixels / worldWidthPixels) + 2;
+
+    stadiumsMap.forEach((stadium, id) => {
+        const { lat, lng } = stadium.coords;
+        
+        // Store in global lookup for click handlers
+        histLookups.stadiums[id] = stadium;
+
+        const icon = L.divIcon({
+            className: 'custom-historical-icon',
+            iconSize: [12, 12],
+            iconAnchor: [6, 6]
+        });
+
+        // Create one marker per world copy (i = 0 is the original, ±1, ±2... are wrapped copies)
+        for (let i = -copiesNeeded; i <= copiesNeeded; i++) {
+            const lngOffset = i * 360;
+            const marker = L.marker([lat, lng + lngOffset], { icon });
+
+            marker.on('mouseover', function() {
+                const el = this.getElement();
+                if (el) {
+                    el.style.transition = 'box-shadow 0.2s ease-in-out';
+                    el.style.boxShadow = '0 0 25px 15px rgba(0, 150, 255, 0.7)';
+                }
+            });
+            marker.on('mouseout', function() {
+                const el = this.getElement();
+                if (el) el.style.boxShadow = 'none';
+            });
+
+            // Click Handler — opens stadium popup. All copies of the same stadium
+            // share the same id, so clicking any copy opens the same details.
+            // Leaflet autoClose ensures clicking another marker closes this one.
+            marker.on('click', (e) => {
+                L.DomEvent.stopPropagation(e); // Prevent map click closing
+                window.currentMarkerRef = marker;
+                if (typeof showStadiumDetails === 'function') {
+                    showStadiumDetails(id, marker);
+                }
+            });
+
+            historicalLayerGroup.addLayer(marker);
+            if (i === 0) bounds.push([lat, lng]);
+            markersAdded++;
+        }
+    });
+
+    console.log(`✅ Created ${markersAdded} markers (${copiesNeeded * 2 + 1} copies each).`);
+
+    // 4. Add Layer to Map
+    if (!map.hasLayer(historicalLayerGroup)) {
+        historicalLayerGroup.addTo(map);
+        console.log("➕ Layer group added to map.");
+    }
+
+    // 5. Fit Bounds to show all markers--bad feature
+  /*  if (bounds.length > 0) {
+        map.fitBounds(bounds, { padding: [50, 50] });
+    }*/
+
+    // 6. Update History Bar
+    updateHistoryBarUI(year, data);
+    
+    console.log(`--- Finished Initializing ${year} ---`);
+}
+
+// ==========================================
+// CROSS-YEAR DATA INDEX (refs & stadiums across all years)
+// ==========================================
+// Loads all available FWCD_{year}.js files in the background and builds
+// global indexes so clicking a ref or stadium shows their full history.
+
+let crossYearIndex = {
+    loaded: false,
+    loading: false,
+    refs: {},        // refName → [{ year, match }]
+    stadiums: {}     // stadiumName → [{ year, match }]
+};
+
+// List of years that have FWCD data files — derived from uniqueYears (FWCD_Participants.js)
+// Falls back to a hardcoded list if uniqueYears isn't available yet
+function getCrossYearSources() {
+    if (typeof uniqueYears !== 'undefined' && Array.isArray(uniqueYears) && uniqueYears.length > 0) {
+        return uniqueYears.map(y => parseInt(y, 10));
+    }
+    // Fallback (shouldn't normally be needed since processData() runs early)
+    return [1930, 1934, 1938, 1950, 1954, 1958, 1962, 1966, 1970, 1974,
+            1978, 1982, 1986, 1990, 1994, 1998, 2002, 2006, 2010, 2014, 2018, 2022, 2026];
+}
+
+// Lazily load all year data files and build the cross-year index.
+// Only runs once; subsequent calls return immediately if already loaded.
+async function ensureCrossYearIndex() {
+    if (crossYearIndex.loaded || crossYearIndex.loading) return;
+    crossYearIndex.loading = true;
+    console.log('📚 Loading cross-year data for refs & stadiums...');
+
+    for (const year of getCrossYearSources()) {
+        const varName = `FWCD_${year}`;
+        try {
+            // Check if already loaded (current year's data is in window[varName])
+            if (!window[varName]) {
+                await new Promise((resolve, reject) => {
+                    const script = document.createElement('script');
+                    script.src = `hist_data/${varName}.js`;
+                    const onReady = () => {
+                        window.removeEventListener(`${varName}_ready`, onReady);
+                        resolve();
+                    };
+                    window.addEventListener(`${varName}_ready`, onReady);
+                    script.onerror = () => { window.removeEventListener(`${varName}_ready`, onReady); resolve(); };
+                    document.head.appendChild(script);
+                });
+            }
+
+            // If data loaded, index it
+            if (window[varName] && window[varName].matches_FULL) {
+                const yr = parseInt(year, 10);
+                window[varName].matches_FULL.forEach(match => {
+                    // Index referee
+                    if (match.referee && match.referee.name) {
+                        const refName = match.referee.name;
+                        if (!crossYearIndex.refs[refName]) crossYearIndex.refs[refName] = [];
+                        crossYearIndex.refs[refName].push({
+                            year: yr,
+                            homeTeam: match.homeTeam,
+                            awayTeam: match.awayTeam,
+                            homeScore: match.homeScore,
+                            awayScore: match.awayScore,
+                            date: match.date,
+                            stage: match.stage || '',
+                            stadium: (match.stadiumFullDetails || match.stadiumFULLDetails || {}).name || match.stadium || ''
+                        });
+                    }
+                    // Index stadium
+                    const sDetails = match.stadiumFullDetails || match.stadiumFULLDetails;
+                    if (sDetails && sDetails.name) {
+                        const sName = sDetails.name;
+                        if (!crossYearIndex.stadiums[sName]) crossYearIndex.stadiums[sName] = [];
+                        crossYearIndex.stadiums[sName].push({
+                            year: yr,
+                            homeTeam: match.homeTeam,
+                            awayTeam: match.awayTeam,
+                            homeScore: match.homeScore,
+                            awayScore: match.awayScore,
+                            date: match.date,
+                            stage: match.stage || '',
+                            referee: match.referee ? match.referee.name : ''
+                        });
+                    }
+                });
+            }
+        } catch (e) {
+            // Skip years that fail to load
+        }
+    }
+
+    crossYearIndex.loaded = true;
+    crossYearIndex.loading = false;
+    console.log(`✅ Cross-year index: ${Object.keys(crossYearIndex.refs).length} refs, ${Object.keys(crossYearIndex.stadiums).length} stadiums`);
+}
+
+// ==========================================
+// NAVIGATION STACK — unified, supports arbitrary depth across ALL contexts
+// ==========================================
+// v160: Extended from v157's {type, year, context, data} structured stack to
+// also support 'player' and 'team' types, so deep navigation chains like
+// stadium → match → player → match2 → team → ... all work back to the start.
+//
+// Each stack entry: { type, year, context, data, label }
+//   type: 'match' | 'ref' | 'stadium' | 'player' | 'team' | 'groups' | 'leaderboard'
+//   year: the year that was active when this view was shown (for year-switch on back)
+//   context: 'popup' | 'bracket' | 'standings' | 'leaderboard' | 'profile'
+//   data: type-specific (matchId / refName / stadiumName / {playerName, fromTeam} / teamName / {})
+//   label: human-readable label for the back button (e.g. "Stadium", "Match", "Argentina")
+//
+// The back button calls window.__navBack() which pops the top entry and restores it.
+// Each show* function pushes the view it's LEAVING before rendering the new view.
+// `window.__navRestoring` is set to true during the restore eval so the rebuild
+// function knows not to push anything (avoids infinite push/pop loop).
+
+let navStack = [];
+
+// Push current state onto the stack before navigating forward.
+// `label` is the human-readable label for the back button (e.g. "Stadium", "Match").
+function pushNavState(type, year, context, data, label) {
+    navStack.push({ type, year: parseInt(year, 10), context, data, label: label || type });
+}
+
+// v160: Flag set to true during navBack() eval so rebuild functions know NOT to push.
+window.__navRestoring = false;
+
+// Pop and restore the previous state.
+// v160: Sets __navRestoring=true before restore so the rebuild function doesn't push.
+window.__navBack = async function() {
+    if (navStack.length === 0) return;
+    const prev = navStack.pop();
+
+    // Switch year if needed (year-switch is part of the restore)
+    if (parseInt(prev.year, 10) !== parseInt(histLookups.currentYear, 10)) {
+        const yearOpt = Array.from(document.querySelectorAll('.year-option')).find(el => parseInt(el.dataset.year, 10) === parseInt(prev.year, 10));
+        if (yearOpt) {
+            currentYearIndex = parseInt(yearOpt.dataset.index, 10);
+            selectedYear = parseInt(prev.year, 10);
+            updateFisheyeUI();
+            filterAndDraw();
+            try { await loadHistoricalData(prev.year); } catch (e) { console.warn(e.message); }
+            filterAndDraw();
+            updateChampionStars(prev.year);
+            const bkContainer = document.getElementById('bracket-svg-container');
+            if (bkContainer && bkContainer.classList.contains('visible')) {
+                toggleBracketTree(true);
+            }
+        }
+    }
+
+    // Set the restoring flag so the rebuild function knows not to push
+    const wasRestoring = window.__navRestoring;
+    window.__navRestoring = true;
+    try {
+        if (prev.type === 'lbexpr') {
+            // v160: Leaderboard/profile string-expression entry — eval it directly.
+            (0, eval)(prev.data.expr);
+        } else if (prev.type === 'match') {
+            if (prev.context === 'bracket') {
+                showBracketPopup(prev.data.matchId);
+            } else if (prev.context === 'standings') {
+                standingsShowMatchDetails(prev.data.matchId);
+            } else {
+                // Popup context
+                if (window.currentMarkerRef) {
+                    showMatchDetails(prev.data.matchId, window.currentMarkerRef);
+                } else {
+                    showBracketPopup(prev.data.matchId);
+                }
+            }
+        } else if (prev.type === 'ref') {
+            await __showRefProfile(prev.data.refName, prev.context, false);
+        } else if (prev.type === 'stadium') {
+            // Stadium in popup context — re-show via showStadiumDetails
+            if (prev.context === 'popup' && window.currentMarkerRef) {
+                showStadiumDetails(prev.data.stadiumName, window.currentMarkerRef);
+            } else {
+                await __showStadiumProfile(prev.data.stadiumName, prev.context, false);
+            }
+        } else if (prev.type === 'player') {
+            // Player view — context determines where to render
+            if (prev.context === 'bracket') {
+                __bracketPopupNav('player', prev.data.playerName, prev.data.fromTeam || '');
+            } else if (prev.context === 'standings') {
+                standingsShowPlayerDetails(prev.data.playerName, prev.data.fromTeam || '');
+            } else if (prev.context === 'popup') {
+                showPlayerDetails(prev.data.playerName, window.currentMarkerRef);
+            } else {
+                // leaderboard / profile context
+                window.__lbClickPlayer(prev.data.playerName, []);
+            }
+        } else if (prev.type === 'team') {
+            if (prev.context === 'bracket') {
+                __bracketPopupNav('team', prev.data.teamName, '');
+            } else if (prev.context === 'standings') {
+                standingsShowTeamDetails(prev.data.teamName);
+            } else if (prev.context === 'popup') {
+                showTeamDetails(prev.data.teamName, window.currentMarkerRef);
+            } else {
+                window.__lbClickTeam(prev.data.teamName);
+            }
+        } else if (prev.type === 'groups') {
+            // Standings groups view
+            window.standingsBackToGroups();
+        } else if (prev.type === 'leaderboard') {
+            // Leaderboard chart view
+            renderLeaderboardTab(prev.data.tab || 'titles');
+        }
+    } finally {
+        window.__navRestoring = wasRestoring;
+    }
+};
+
+// Clear the nav stack (called when a popup/overlay closes)
+function clearNavStack() {
+    navStack = [];
+}
+
+// v160: Helper — returns a back-button HTML string.
+// `defaultLabel` is used when the stack is empty (e.g. "Stadium" for popup root).
+// If the stack is empty AND no defaultLabel, returns '' (button hidden).
+// If the stack is non-empty, uses the top entry's label.
+function navBackBtn(defaultLabel) {
+    if (navStack.length === 0 && !defaultLabel) return '';
+    const label = navStack.length > 0 ? navStack[navStack.length - 1].label : defaultLabel;
+    return `<button class="hist-back-btn" onclick="window.__navBack()" style="margin-bottom:8px;">← ${esc(label)}</button>`;
+}
+
+// --- Match click from ref/stadium profile ---
+window.__showRefMatch = async function(matchYear, homeTeam, awayTeam, dateStr, context) {
+    // v160: Push the ref/stadium view we're leaving — but only on forward nav.
+    // When restoring via __navBack (window.__navRestoring=true), don't push.
+    if (!window.__navRestoring) {
+        // Determine which view we're leaving based on current state.
+        // If currentMatchContext is set, we're leaving a match view (e.g. match → ref → match2).
+        // Otherwise, we're leaving the ref/stadium profile that called __showRefMatch.
+        // The ref/stadium profile already pushed itself before calling us, so we just
+        // need to handle the match-leave case.
+        if (currentMatchContext || bracketPopupContext.matchId) {
+            const matchId = currentMatchContext || bracketPopupContext.matchId;
+            pushNavState('match', histLookups.currentYear, context, { matchId }, 'Match');
+        }
+    }
+
+    // Switch year if needed
+    if (parseInt(matchYear, 10) !== parseInt(histLookups.currentYear, 10)) {
+        const yearOpt = Array.from(document.querySelectorAll('.year-option')).find(el => parseInt(el.dataset.year, 10) === parseInt(matchYear, 10));
+        if (yearOpt) {
+            currentYearIndex = parseInt(yearOpt.dataset.index, 10);
+            selectedYear = parseInt(matchYear, 10);
+            updateFisheyeUI();
+            filterAndDraw();
+            try { await loadHistoricalData(matchYear); } catch (e) { console.warn(e.message); }
+            filterAndDraw();
+            updateChampionStars(matchYear);
+            const bkContainer = document.getElementById('bracket-svg-container');
+            if (bkContainer && bkContainer.classList.contains('visible')) {
+                toggleBracketTree(true);
+            }
+        }
+    }
+
+    const all = histLookups.allMatches || [];
+    const match = all.find(m =>
+        (m.homeTeam === homeTeam && m.awayTeam === awayTeam) ||
+        (m.homeTeam === awayTeam && m.awayTeam === homeTeam)
+    );
+    if (!match) { console.warn('Match not found:', homeTeam, awayTeam, matchYear); return; }
+
+    const storedMatchId = match.id || `${match.homeTeam}-${match.awayTeam}-${match.date}`;
+
+    if (context === 'bracket') {
+        showBracketPopup(storedMatchId);
+    } else if (context === 'standings') {
+        const overlay = document.getElementById('standings-overlay');
+        if (overlay && overlay.classList.contains('visible')) {
+            standingsShowMatchDetails(storedMatchId);
+        } else {
+            openStandingsOverlay();
+            setTimeout(() => standingsShowMatchDetails(storedMatchId), 300);
+        }
+    } else if (context === 'leaderboard' || context === 'profile') {
+        // Render match inside the active leaderboard/profile body
+        const { match: m } = findMatchById(storedMatchId);
+        if (m) {
+            const matchBody = buildMatchBody(m, { context: getActiveContext(), matchId: storedMatchId });
+            const backBtn = `<div class="lb-tab" onclick="window.__navBack()" style="margin-bottom:12px; cursor:pointer;">← Back</div>`;
+            const body = getActiveProfileBody();
+            if (body) {
+                body.innerHTML = `<h2 style="color:#FFD700; margin:0 0 12px; font-size:1.2rem;">⚽ ${m.homeTeam} vs ${m.awayTeam}</h2>${backBtn}${matchBody}`;
+                body.scrollTop = 0;
+            }
+        }
+    } else {
+        // Popup context
+        if (window.currentMarkerRef) {
+            showMatchDetails(storedMatchId, window.currentMarkerRef);
+        } else {
+            showBracketPopup(storedMatchId);
+        }
+    }
+    // v160: Back button is now part of each view's HTML (via navBackBtn or inline),
+    // so no need to inject it afterwards.
+};
+
+// --- Show ref profile ---
+// pushToStack=true when navigating forward (default), false when restoring via __navBack.
+// v160: Also guarded by window.__navRestoring — if true, skip push (stack already popped).
+window.__showRefProfile = async function(refName, context, pushToStack) {
+    if (pushToStack !== false && !window.__navRestoring) {
+        // Push the match we're leaving so Back returns to it
+        if (currentMatchContext || bracketPopupContext.matchId) {
+            const matchId = currentMatchContext || bracketPopupContext.matchId;
+            pushNavState('match', histLookups.currentYear, context, { matchId }, 'Match');
+        }
+    }
+
+    await ensureCrossYearIndex();
+    const matches = crossYearIndex.refs[refName] || [];
+    const html = buildRefProfileHtml(refName, matches, context);
+    const backBtnHtml = `<button class="hist-back-btn" onclick="window.__navBack()">← Back</button>`;
+
+    if (context === 'bracket') {
+        const popup = document.getElementById('bracket-popup');
+        if (popup) {
+            popup.querySelector('.leaflet-popup-content').innerHTML = `<div class="hist-popup-content"><div class="hist-card-header"><h2>👤 ${refName}</h2></div><div class="hist-card-body">${backBtnHtml}${html}</div></div>`;
+            popup.querySelector('.leaflet-popup-content').scrollTop = 0;
+        }
+    } else if (context === 'standings') {
+        const body = document.getElementById('standings-body');
+        if (body) {
+            body.innerHTML = `<h2 style="color:#FFD700; margin:0 0 12px; font-size:1.3rem;">👤 ${refName}</h2>${backBtnHtml}${html}`;
+            body.scrollTop = 0;
+        }
+    } else if (context === 'leaderboard' || context === 'profile') {
+        const body = getActiveProfileBody();
+        if (body) {
+            body.innerHTML = `<h2 style="color:#FFD700; margin:0 0 12px; font-size:1.2rem;">👤 ${refName}</h2>${backBtnHtml}${html}`;
+            body.scrollTop = 0;
+        }
+    } else {
+        if (window.currentMarkerRef) {
+            updatePopupContent(window.currentMarkerRef, popupShell(`👤 ${refName}`, backBtnHtml + html));
+        }
+    }
+};
+
+// --- Show stadium profile ---
+window.__showStadiumProfile = async function(stadiumName, context, pushToStack) {
+    if (pushToStack !== false && !window.__navRestoring) {
+        if (currentMatchContext || bracketPopupContext.matchId) {
+            const matchId = currentMatchContext || bracketPopupContext.matchId;
+            pushNavState('match', histLookups.currentYear, context, { matchId }, 'Match');
+        }
+    }
+
+    await ensureCrossYearIndex();
+    const matches = crossYearIndex.stadiums[stadiumName] || [];
+    const html = buildStadiumProfileHtml(stadiumName, matches, context);
+    const backBtnHtml = `<button class="hist-back-btn" onclick="window.__navBack()">← Back</button>`;
+
+    if (context === 'bracket') {
+        const popup = document.getElementById('bracket-popup');
+        if (popup) {
+            popup.querySelector('.leaflet-popup-content').innerHTML = `<div class="hist-popup-content"><div class="hist-card-header"><h2>🏟️ ${stadiumName}</h2></div><div class="hist-card-body">${backBtnHtml}${html}</div></div>`;
+            popup.querySelector('.leaflet-popup-content').scrollTop = 0;
+        }
+    } else if (context === 'standings') {
+        const body = document.getElementById('standings-body');
+        if (body) {
+            body.innerHTML = `<h2 style="color:#FFD700; margin:0 0 12px; font-size:1.3rem;">🏟️ ${stadiumName}</h2>${backBtnHtml}${html}`;
+            body.scrollTop = 0;
+        }
+    } else if (context === 'leaderboard' || context === 'profile') {
+        const body = getActiveProfileBody();
+        if (body) {
+            body.innerHTML = `<h2 style="color:#FFD700; margin:0 0 12px; font-size:1.2rem;">🏟️ ${stadiumName}</h2>${backBtnHtml}${html}`;
+            body.scrollTop = 0;
+        }
+    } else {
+        if (window.currentMarkerRef) {
+            updatePopupContent(window.currentMarkerRef, popupShell(`🏟️ ${stadiumName}`, backBtnHtml + html));
+        }
+    }
+};
+
+// Build ref profile HTML — shows all matches across all years
+// context is stored in a closure so match cards know where to open
+function buildRefProfileHtml(refName, matches, context) {
+    if (matches.length === 0) {
+        return '<p style="color:#888;">No match history found for this referee.</p>';
+    }
+
+    matches.sort((a, b) => a.year - b.year);
+
+    const byYear = {};
+    matches.forEach(m => {
+        if (!byYear[m.year]) byYear[m.year] = [];
+        byYear[m.year].push(m);
+    });
+
+    // Count total cards across all matches
+    let totalCards = 0;
+    let totalYellow = 0;
+    let totalRed = 0;
+
+    // For each match, look up the full match data to get card counts
+    matches.forEach(m => {
+        const varName = `FWCD_${m.year}`;
+        if (window[varName] && window[varName].matches_FULL) {
+            const fullMatch = window[varName].matches_FULL.find(fm =>
+                (fm.homeTeam === m.homeTeam && fm.awayTeam === m.awayTeam) ||
+                (fm.homeTeam === m.awayTeam && fm.awayTeam === m.homeTeam)
+            );
+            if (fullMatch && fullMatch.cards) {
+                m.cardCount = fullMatch.cards.length;
+                m.yellowCards = fullMatch.cards.filter(c => c.color === 'yellow').length;
+                m.redCards = fullMatch.cards.filter(c => c.color === 'red').length;
+                totalCards += m.cardCount;
+                totalYellow += m.yellowCards;
+                totalRed += m.redCards;
+            } else {
+                m.cardCount = 0; m.yellowCards = 0; m.redCards = 0;
+            }
+        } else {
+            m.cardCount = 0; m.yellowCards = 0; m.redCards = 0;
+        }
+    });
+
+    const ctx = context || 'popup';
+    const isLeaderboard = ctx === 'leaderboard';
+    const matchClick = isLeaderboard
+        ? (year, home, away) => `window.__lbShowMatchForRef(${year}, '${esc(home)}', '${esc(away)}', '${esc(refName)}')`
+        : (year, home, away) => `window.__showRefMatch(${year}, '${esc(home)}', '${esc(away)}', '', '${ctx}')`;
+
+    const yearsHtml = Object.entries(byYear).map(([year, yrMatches]) => {
+        const matchesHtml = yrMatches.map(m => {
+            const dateStr = m.date ? new Date(m.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+            const stageMap = { 'r16': 'R16', 'qf': 'QF', 'sf': 'SF', 'final': 'Final', '3rd': '3rd', 'group': 'Group', 'round_of_16': 'R16', 'quarter_final': 'QF', 'semi_final': 'SF', 'third_place': '3rd' };
+            const stageLabel = stageMap[m.stage] || (m.stage || '').replace(/_/g, ' ');
+            // Build cards line
+            let cardsHtml = '';
+            if (m.yellowCards > 0 || m.redCards > 0) {
+                const parts = [];
+                if (m.yellowCards > 0) parts.push(`<span style="color:#f1c40f;">🟨 ${m.yellowCards}</span>`);
+                if (m.redCards > 0) parts.push(`<span style="color:#e74c3c;">🟥 ${m.redCards}</span>`);
+                cardsHtml = `<div style="font-size:0.68rem; padding:2px 0; line-height:1.5;">${parts.join(' ')}</div>`;
+            }
+            return `
+                <div class="hist-match-card" onclick="${matchClick(year, m.homeTeam, m.awayTeam)}">
+                    <span class="mc-date">${dateStr}</span>
+                    <div class="mc-teams">
+                        <span class="mc-team">${flagImg(m.homeTeam)} ${m.homeTeam || ''}</span>
+                        <span class="mc-score">${m.homeScore != null ? m.homeScore : '-'}-${m.awayScore != null ? m.awayScore : '-'}</span>
+                        <span class="mc-team">${flagImg(m.awayTeam)} ${m.awayTeam || ''}</span>
+                    </div>
+                    <span class="mc-stage">${stageLabel}</span>
+                    ${cardsHtml}
+                </div>`;
+        }).join('');
+        return `
+            <h3 style="color:#FFD700; margin:12px 0 6px;">${year} World Cup</h3>
+            <div class="hist-match-grid">${matchesHtml}</div>`;
+    }).join('');
+
+    return `
+        <div style="display:flex; gap:14px; align-items:center; margin-bottom:14px;">
+            <div style="flex-shrink:0; width:80px; height:80px; border-radius:8px; overflow:hidden; border:1px solid rgba(212,175,55,0.3); background:rgba(0,0,0,0.3);">${getRefPhotoHtml(refName)}</div>
+            <div>
+                <div style="font-size:0.7rem; color:#888; text-transform:uppercase; letter-spacing:1px;">Referee</div>
+                <div style="font-size:1.1rem; font-weight:700; color:#FFD700;">${esc(refName)}</div>
+                <div style="font-size:0.75rem; color:#aaa; margin-top:2px;">${matches.length} matches • ${Object.keys(byYear).length} World Cups</div>
+            </div>
+        </div>
+        <div class="hist-stat-grid" style="grid-template-columns:1fr 1fr 1fr 1fr; margin-bottom:12px;">
+            <div class="hist-stat-box"><span class="hist-stat-val">${matches.length}</span><span class="hist-stat-lbl">Total Matches</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${Object.keys(byYear).length}</span><span class="hist-stat-lbl">World Cups</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val" style="color:#f1c40f;">${totalYellow}</span><span class="hist-stat-lbl">🟨 Yellow</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val" style="color:#e74c3c;">${totalRed}</span><span class="hist-stat-lbl">🟥 Red</span></div>
+        </div>
+        <h3>Match History</h3>
+        ${yearsHtml}
+    `;
+}
+
+// Build stadium profile HTML — shows all matches across all years
+function buildStadiumProfileHtml(stadiumName, matches, context) {
+    if (matches.length === 0) {
+        return '<p style="color:#888;">No match history found for this stadium.</p>';
+    }
+
+    matches.sort((a, b) => a.year - b.year);
+
+    const byYear = {};
+    matches.forEach(m => {
+        if (!byYear[m.year]) byYear[m.year] = [];
+        byYear[m.year].push(m);
+    });
+
+    const ctx = context || 'popup';
+    const isLeaderboard = ctx === 'leaderboard';
+    // In leaderboard context, match clicks go to __lbShowMatchForStadium with stadiumName as the back target
+    const matchClick = isLeaderboard
+        ? (year, home, away) => `window.__lbShowMatchForStadium(${year}, '${esc(home)}', '${esc(away)}', '${esc(stadiumName)}')`
+        : (year, home, away) => `window.__showRefMatch(${year}, '${esc(home)}', '${esc(away)}', '', '${ctx}')`;
+
+    const yearsHtml = Object.entries(byYear).map(([year, yrMatches]) => {
+        const matchesHtml = yrMatches.map(m => {
+            const dateStr = m.date ? new Date(m.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+            const stageMap = { 'r16': 'R16', 'qf': 'QF', 'sf': 'SF', 'final': 'Final', '3rd': '3rd', 'group': 'Group', 'round_of_16': 'R16', 'quarter_final': 'QF', 'semi_final': 'SF', 'third_place': '3rd' };
+            const stageLabel = stageMap[m.stage] || (m.stage || '').replace(/_/g, ' ');
+            return `
+                <div class="hist-match-card" onclick="${matchClick(year, m.homeTeam, m.awayTeam)}">
+                    <span class="mc-date">${dateStr}</span>
+                    <div class="mc-teams">
+                        <span class="mc-team">${flagImg(m.homeTeam)} ${m.homeTeam || ''}</span>
+                        <span class="mc-score">${m.homeScore != null ? m.homeScore : '-'}-${m.awayScore != null ? m.awayScore : '-'}</span>
+                        <span class="mc-team">${flagImg(m.awayTeam)} ${m.awayTeam || ''}</span>
+                    </div>
+                    <span class="mc-stage">${stageLabel}</span>
+                </div>`;
+        }).join('');
+        return `
+            <h3 style="color:#FFD700; margin:12px 0 6px;">${year} World Cup</h3>
+            <div class="hist-match-grid">${matchesHtml}</div>`;
+    }).join('');
+
+    return `
+        <div class="hist-stat-grid" style="grid-template-columns:1fr 1fr; margin-bottom:12px;">
+            <div class="hist-stat-box"><span class="hist-stat-val">${matches.length}</span><span class="hist-stat-lbl">Total Matches</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${Object.keys(byYear).length}</span><span class="hist-stat-lbl">World Cups</span></div>
+        </div>
+        <h3>Match History</h3>
+        ${yearsHtml}
+    `;
+}
+
+// Show a match inside the leaderboard (from ref profile click) — back button returns via nav stack
+window.__lbShowMatchForRef = async function(matchYear, homeTeam, awayTeam, refName) {
+    // Push "return to ref profile" onto nav stack
+    lbNavPush(`window.__lbClickRef('${esc(refName)}')`);
+    // Switch year if needed
+    if (parseInt(matchYear, 10) !== parseInt(histLookups.currentYear, 10)) {
+        const yearOpt = Array.from(document.querySelectorAll('.year-option')).find(el => parseInt(el.dataset.year, 10) === parseInt(matchYear, 10));
+        if (yearOpt) {
+            currentYearIndex = parseInt(yearOpt.dataset.index, 10);
+            selectedYear = parseInt(matchYear, 10);
+            updateFisheyeUI();
+            filterAndDraw();
+            try { await loadHistoricalData(matchYear); } catch (e) { console.warn(e.message); }
+            filterAndDraw();
+            updateChampionStars(matchYear);
+        }
+    }
+
+    const all = histLookups.allMatches || [];
+    const match = all.find(m =>
+        (m.homeTeam === homeTeam && m.awayTeam === awayTeam) ||
+        (m.homeTeam === awayTeam && m.awayTeam === homeTeam)
+    );
+    if (!match) { console.warn('Match not found:', homeTeam, awayTeam, matchYear); return; }
+
+    const storedMatchId = match.id || `${match.homeTeam}-${match.awayTeam}-${match.date}`;
+    const { match: m } = findMatchById(storedMatchId);
+    if (!m) return;
+
+    const matchBody = buildMatchBody(m, { context: getActiveContext(), matchId: storedMatchId });
+    lbCurrentMatchRebuild = `window.__lbShowMatchForRef(${matchYear}, '${esc(homeTeam)}', '${esc(awayTeam)}', '${esc(refName)}')`;
+    const backBtn = `<div class="lb-tab" onclick="lbNavBack()" style="margin-bottom:12px; cursor:pointer;">← Back</div>`;
+    const body = getActiveProfileBody();
+    if (body) {
+        body.innerHTML = `<h2 style="color:#FFD700; margin:0 0 12px; font-size:1.2rem;">⚽ ${m.homeTeam} vs ${m.awayTeam}</h2>${backBtn}${matchBody}`;
+        body.scrollTop = 0;
+    }
+};
+
+// Show a match inside the leaderboard (from stadium profile click) — back button returns via nav stack
+window.__lbShowMatchForStadium = async function(matchYear, homeTeam, awayTeam, stadiumName) {
+    // Push "return to stadium profile" onto nav stack
+    lbNavPush(`window.__lbClickStadium('${esc(stadiumName)}')`);
+    // Switch year if needed
+    if (parseInt(matchYear, 10) !== parseInt(histLookups.currentYear, 10)) {
+        const yearOpt = Array.from(document.querySelectorAll('.year-option')).find(el => parseInt(el.dataset.year, 10) === parseInt(matchYear, 10));
+        if (yearOpt) {
+            currentYearIndex = parseInt(yearOpt.dataset.index, 10);
+            selectedYear = parseInt(matchYear, 10);
+            updateFisheyeUI();
+            filterAndDraw();
+            try { await loadHistoricalData(matchYear); } catch (e) { console.warn(e.message); }
+            filterAndDraw();
+            updateChampionStars(matchYear);
+        }
+    }
+
+    const all = histLookups.allMatches || [];
+    const match = all.find(m =>
+        (m.homeTeam === homeTeam && m.awayTeam === awayTeam) ||
+        (m.homeTeam === awayTeam && m.awayTeam === homeTeam)
+    );
+    if (!match) { console.warn('Match not found:', homeTeam, awayTeam, matchYear); return; }
+
+    const storedMatchId = match.id || `${match.homeTeam}-${match.awayTeam}-${match.date}`;
+    const { match: m } = findMatchById(storedMatchId);
+    if (!m) return;
+
+    const matchBody = buildMatchBody(m, { context: getActiveContext(), matchId: storedMatchId });
+    lbCurrentMatchRebuild = `window.__lbShowMatchForStadium(${matchYear}, '${esc(homeTeam)}', '${esc(awayTeam)}', '${esc(stadiumName)}')`;
+    const backBtn = `<div class="lb-tab" onclick="lbNavBack()" style="margin-bottom:12px; cursor:pointer;">← Back</div>`;
+    const body = getActiveProfileBody();
+    if (body) {
+        body.innerHTML = `<h2 style="color:#FFD700; margin:0 0 12px; font-size:1.2rem;">⚽ ${m.homeTeam} vs ${m.awayTeam}</h2>${backBtn}${matchBody}`;
+        body.scrollTop = 0;
+    }
+};
+
+// Helper: Separated UI update for clarity
+function updateHistoryBarUI(year, data) {
+    const bar = document.getElementById('history-bar');
+    const content = document.getElementById('history-content');
+    
+    if (!bar || !content) {
+        console.warn("⚠️ History bar elements not found in DOM.");
+        return;
+    }
+
+    if (data.tournament_info) {
+        const info = data.tournament_info;
+        content.innerHTML = `
+            <div class="history-stat"><span class="val">${info.host ? info.host.join(' & ') : 'N/A'}</span><span class="lbl">Host</span></div>
+            <div class="history-stat"><span class="val">${info.champion || 'N/A'}</span><span class="scr">Champion</span></div>
+            <div class="history-stat"><span class="val">${info.runnerUp || 'N/A'}</span><span class="lbl">First Loser</span></div>
+            <div class="history-stat"><span class="val">${info.thirdPlace || 'N/A'}</span><span class="lbl">Third Place</span></div>
+            <div class="history-stat"><span class="val">${info.topScorer?.player || 'N/A'}</span><span class="scr">(${info.topScorer?.goals}) Top Scorer</span></div>
+            <div class="history-stat"><span class="val">${info.bestPlayer || 'N/A'}</span><span class="lbl">Best Player</span></div>
+            <div class="history-stat"><span class="val">${info.bestYoungPlayer || 'N/A'}</span><span class="lbl">Best Young Player</span></div>
+            <div class="history-stat"><span class="val">${info.bestGoalkeeper || 'N/A'}</span><span class="scr">Best GK</span></div>
+            <div class="history-stat"><span class="val">${info.totalGoals || 0}</span><span class="lbl">Total Goals</span></div>
+            <div class="history-stat"><span class="val">${info.totalAttendance || 'N/A'}</span><span class="lbl">Attended</span></div>
+            <div class="history-stat">
+            <span class="val">
+                ${info.datesIso?.start 
+                ? new Date(info.datesIso.start).toLocaleDateString('en-US', { month: 'long' }) + 
+                    ' - ' + 
+                    new Date(info.datesIso.start).getDate().toString().padStart(2, '0') 
+                : 'N/A'}
+            </span>
+            <span class="scr">
+                ${info.datesIso?.end 
+                ? new Date(info.datesIso.end).toLocaleDateString('en-US', { month: 'long' }) + 
+                    ' - ' + 
+                    new Date(info.datesIso.end).getDate().toString().padStart(2, '0') 
+                : 'N/A'}
+            </span>
+            </div>   
+        `;
+        bar.classList.add('visible');
+        // Show the bracket toggle + leaderboard buttons alongside the history bar
+        const bkBtn = document.getElementById('bracket-toggle-btn');
+        if (bkBtn) bkBtn.classList.add('visible');
+        const lbBtn = document.getElementById('leaderboard-btn');
+        if (lbBtn) lbBtn.classList.add('year-active');
+        const cpBtn = document.getElementById('compare-btn');
+        if (cpBtn) cpBtn.classList.add('year-active');
+        const srBtn = document.getElementById('search-btn');
+        if (srBtn) srBtn.classList.add('year-active');
+        const rpBtn = document.getElementById('replay-btn');
+        if (rpBtn) rpBtn.classList.add('visible');
+        // Rule 1: update overlay floor when icons shift
+        if (typeof updateOverlayFloor === 'function') updateOverlayFloor();
+        console.log("✅ History bar updated.");
+    }
+
+    // Build the news ticker from trivia data
+    updateNewsTicker(data.trivia);
+
+    // Update champion stars from fifaWorldCupParticipants data
+    updateChampionStars(year);
+}
+
+// --- CHAMPION STARS ---
+// Stars are now drawn on the D3 champion circles on the map (see draw() function).
+// This function is kept for compatibility but no longer renders the history bar stars.
+function updateChampionStars(year) {
+    const container = document.getElementById('champion-stars');
+    if (container) {
+        container.classList.remove('visible');
+        container.innerHTML = '';
+    }
+    // Stars are rendered by the D3 draw() function around champion circles
+    if (year) {
+        const yearNum = parseInt(year, 10);
+        if (typeof fifaWorldCupParticipants !== 'undefined') {
+            const champion = fifaWorldCupParticipants.find(p =>
+                parseInt(p.year, 10) === yearNum && p.Success === 'Champion'
+            );
+            if (champion) {
+                let starCount = parseInt(champion.Star || champion.stars || 0, 10);
+                if (isNaN(starCount) || starCount < 1) starCount = 1;
+                console.log(`⭐ Champion stars: ${starCount} stars for ${year} (drawn on map)`);
+            }
+        }
+    }
+}
+
+// ==========================================
+// HISTORICAL BRACKET TREE
+// ==========================================
+// Renders a knockout bracket tree directly over the map (no background).
+// The tree fans out left/right from the Final at center.
+// Dynamically resizes to fill available space (accounting for pinned bars).
+
+// Step 1: Build tree structure by tracing from Final outward
+function buildBracketTree(bracketData) {
+    if (!bracketData || !bracketData.stages) return null;
+    const stages = bracketData.stages;
+
+    // Build stage order from earliest to latest
+    const stageOrder = [];
+    if (stages.round_of_32) stageOrder.push('round_of_32');
+    if (stages.round_of_16) stageOrder.push('round_of_16');
+    if (stages.quarter_final) stageOrder.push('quarter_final');
+    if (stages.semi_final) stageOrder.push('semi_final');
+    if (stages.final) stageOrder.push('final');
+    if (stageOrder.length === 0) return null;
+
+    // Index all matches by matchNo for ref lookup (homeRef="W74" → matchNo 74)
+    const matchByNo = {};
+    for (const stageKey of stageOrder) {
+        for (const m of (stages[stageKey] || [])) {
+            if (m.matchNo) matchByNo[m.matchNo] = m;
+        }
+    }
+
+    // Find the match where a team appeared in a given stage
+    function findMatchInStage(stageKey, team) {
+        if (!team) return null;
+        const matches = stages[stageKey];
+        if (!matches) return null;
+        return matches.find(m => m.home === team || m.away === team);
+    }
+
+    // Build a COMPLETE binary tree using homeRef/awayRef to link matches.
+    // Each match's homeRef/awayRef (e.g., "W74") points to the match whose winner advances.
+    // We trace backward from the final to the earliest round, following these refs.
+    // If refs are missing, we fall back to tracing by team name.
+    // `side` = 'home' or 'away' — which ref to follow from the parent match.
+    function buildSubtreeByRef(parentMatch, stageIdx, side) {
+        if (!parentMatch || stageIdx < 0) return null;
+
+        // Parse ref like "W74" → matchNo 74
+        function parseRef(ref) {
+            if (!ref) return null;
+            const m = ref.match(/^W(\d+)$/);
+            return m ? parseInt(m[1], 10) : null;
+        }
+
+        // Find the child match by ref (or by team name as fallback)
+        function findChildMatch(ref, teamName) {
+            const refNo = parseRef(ref);
+            if (refNo && matchByNo[refNo]) return matchByNo[refNo];
+            if (teamName) {
+                for (let i = stageIdx; i >= 0; i--) {
+                    const found = findMatchInStage(stageOrder[i], teamName);
+                    if (found) return found;
+                }
+            }
+            return null;
+        }
+
+        const ref = side === 'home' ? parentMatch.homeRef : parentMatch.awayRef;
+        const teamName = side === 'home' ? parentMatch.home : parentMatch.away;
+        const childMatch = findChildMatch(ref, teamName);
+        if (!childMatch) return null;
+
+        return {
+            match: childMatch,
+            left: buildSubtreeByRef(childMatch, stageIdx - 1, 'home'),
+            right: buildSubtreeByRef(childMatch, stageIdx - 1, 'away')
+        };
+    }
+
+    // Build root from the final (or deepest stage)
+    const rootStageKey = stageOrder[stageOrder.length - 1];
+    const rootStageMatches = stages[rootStageKey];
+    if (!rootStageMatches || rootStageMatches.length === 0) return null;
+    const rootMatch = rootStageMatches[0];
+    const rootStageIdx = stageOrder.indexOf(rootStageKey);
+
+    // If the root match has homeRef/awayRef, use ref-based tree building
+    // (this builds the COMPLETE bracket tree with all matches)
+    if (rootMatch.homeRef || rootMatch.awayRef) {
+        const leftSubtree = buildSubtreeByRef(rootMatch, rootStageIdx - 1, 'home');
+        const rightSubtree = buildSubtreeByRef(rootMatch, rootStageIdx - 1, 'away');
+        return {
+            root: { match: rootMatch, left: leftSubtree, right: rightSubtree },
+            thirdPlace: stages.third_place && stages.third_place[0],
+            stageCount: stageOrder.length
+        };
+    }
+
+    // Fallback: trace by team name (for older data without refs)
+    function buildSubtree(team, stageIdx) {
+        if (!team || stageIdx < 0) return null;
+        for (let i = stageIdx; i >= 0; i--) {
+            const match = findMatchInStage(stageOrder[i], team);
+            if (match) {
+                const opponent = match.home === team ? match.away : match.home;
+                return {
+                    match,
+                    left: buildSubtree(team, i - 1),
+                    right: buildSubtree(opponent, i - 1)
+                };
+            }
+        }
+        return null;
+    }
+
+    // Resolve root teams if null
+    let rootHome = rootMatch.home;
+    let rootAway = rootMatch.away;
+    if (!rootHome || !rootAway) {
+        for (let i = rootStageIdx - 1; i >= 0; i--) {
+            if (rootHome && rootAway) break;
+            const stageMatches = stages[stageOrder[i]] || [];
+            const winners = stageMatches.map(m => m.winner).filter(w => w);
+            if (!rootHome && winners.length > 0) rootHome = winners[0];
+            if (!rootAway && winners.length > 1) rootAway = winners[1];
+        }
+    }
+
+    const leftSubtree = buildSubtree(rootHome, rootStageIdx - 1);
+    const rightSubtree = buildSubtree(rootAway, rootStageIdx - 1);
+
+    return {
+        root: { match: rootMatch, left: leftSubtree, right: rightSubtree },
+        thirdPlace: stages.third_place && stages.third_place[0],
+        stageCount: stageOrder.length
+    };
+}
+
+// Step 2: Count leaves and depth on each side (for layout calculation)
+function getTreeDimensions(tree) {
+    function countLeaves(node) {
+        if (!node) return 0;
+        if (!node.left && !node.right) return 1;
+        return countLeaves(node.left) + countLeaves(node.right);
+    }
+    const leftLeaves = countLeaves(tree.root.left);
+    const rightLeaves = countLeaves(tree.root.right);
+    return { leftLeaves, rightLeaves, totalLeaves: leftLeaves + rightLeaves };
+}
+
+// Step 3: Assign x,y positions. Final at center. Left branch fans left, right branch fans right.
+// Uses available width/height to spread cards out with generous spacing.
+// Reserves bottom space for the year filter + history bar so cards don't overlap them.
+// xOffset shifts the center right when the left sidebar is pinned.
+function layoutBracketTree(tree, availWidth, availHeight, xOffset) {
+    if (!tree || !tree.root) return null;
+
+    const matchW = 150;
+    const matchH = 52;
+    const minGap = 16; // minimum vertical gap between cards
+    xOffset = xOffset || 0; // shift center right when left sidebar is pinned
+
+    // Reserve bottom space for year filter (32px) + history bar (~60px) + champion stars + padding
+    // Total bottom reserve: ~200px
+    const bottomReserve = 200;
+    const topReserve = 20; // small top padding
+    const usableHeight = Math.max(200, availHeight - bottomReserve - topReserve);
+    const usableWidth = availWidth;
+    const centerX = usableWidth / 2 + xOffset; // center shifted by xOffset
+
+    const { leftLeaves, rightLeaves } = getTreeDimensions(tree);
+    const maxLeaves = Math.max(leftLeaves, rightLeaves, 1);
+
+    // Calculate vertical space needed (within usable area)
+    const totalHeight = Math.max(usableHeight, maxLeaves * (matchH + minGap) + matchH);
+    const ySpacing = totalHeight / (maxLeaves + 1);
+
+    // Calculate horizontal space — each stage gets a column.
+    // xSpacing is calculated to fit ALL cards within the available width.
+    // The outermost cards are at depth (stageCount-1) from center, so:
+    //   (stageCount-1) * xSpacing + matchW/2 <= usableWidth/2 - padding
+    //   xSpacing <= (usableWidth/2 - matchW/2 - padding) / (stageCount-1)
+    const stageCount = tree.stageCount || 3;
+    const hPadding = 20; // horizontal padding from edges
+    const maxDepth = Math.max(1, stageCount - 1);
+    const xSpacing = Math.max(120, (usableWidth / 2 - matchW / 2 - hPadding) / maxDepth);
+
+    let leftLeafIdx = 0;
+    let rightLeafIdx = 0;
+
+    function layoutSubtree(node, depth, isLeft) {
+        if (!node) return;
+        const sign = isLeft ? -1 : 1;
+        node.x = centerX + sign * depth * xSpacing;
+
+        if (node.left || node.right) {
+            layoutSubtree(node.left, depth + 1, isLeft);
+            layoutSubtree(node.right, depth + 1, isLeft);
+            if (node.left && node.right) {
+                node.y = (node.left.y + node.right.y) / 2;
+            } else if (node.left) {
+                node.y = node.left.y;
+            } else {
+                node.y = node.right.y;
+            }
+        } else {
+            const idx = isLeft ? leftLeafIdx : rightLeafIdx;
+            if (isLeft) leftLeafIdx++; else rightLeafIdx++;
+            // Offset by topReserve so cards start below the top edge
+            node.y = topReserve + (idx + 1) * ySpacing;
+        }
+    }
+
+    layoutSubtree(tree.root.left, 1, true);
+    layoutSubtree(tree.root.right, 1, false);
+
+    tree.root.x = centerX;
+    if (tree.root.left && tree.root.right) {
+        tree.root.y = (tree.root.left.y + tree.root.right.y) / 2;
+    } else if (tree.root.left) {
+        tree.root.y = tree.root.left.y;
+    } else if (tree.root.right) {
+        tree.root.y = tree.root.right.y;
+    } else {
+        tree.root.y = topReserve + totalHeight / 2;
+    }
+
+    // Third-place: below the Final, but clamp to stay within usable area
+    // Reduced gap (0.6 × ySpacing instead of 1.5) so it doesn't overlap the bracket toggle button
+    if (tree.thirdPlace) {
+        tree.thirdPlace.x = centerX;
+        const thirdY = tree.root.y + Math.max(ySpacing * 0.6, matchH + 10);
+        // Clamp: don't let third-place card bottom edge go past the usable area
+        const maxThirdY = topReserve + usableHeight - matchH / 2 - 10;
+        tree.thirdPlace.y = Math.min(thirdY, maxThirdY);
+    }
+
+    // Calculate bounds for SVG viewBox
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    function scanBounds(node) {
+        if (!node) return;
+        minX = Math.min(minX, node.x - matchW / 2);
+        maxX = Math.max(maxX, node.x + matchW / 2);
+        minY = Math.min(minY, node.y - matchH / 2);
+        maxY = Math.max(maxY, node.y + matchH / 2);
+        scanBounds(node.left);
+        scanBounds(node.right);
+    }
+    scanBounds(tree.root);
+    if (tree.thirdPlace) {
+        minX = Math.min(minX, tree.thirdPlace.x - matchW / 2);
+        maxX = Math.max(maxX, tree.thirdPlace.x + matchW / 2);
+        minY = Math.min(minY, tree.thirdPlace.y - matchH / 2);
+        maxY = Math.max(maxY, tree.thirdPlace.y + matchH / 2);
+    }
+
+    // Set viewBox to the FULL available space (not tight card bounds) so there's no
+    // letterboxing. Cards render at their natural size within this coordinate system.
+    tree._bounds = {
+        x: 0,
+        y: 0,
+        width: availWidth,
+        height: availHeight,
+        matchW, matchH
+    };
+    return tree;
+}
+
+// Step 4: Render the bracket tree as SVG HTML string
+// NOTE: layoutBracketTree must be called BEFORE this function.
+function renderBracketSvg(tree) {
+    if (!tree || !tree.root || !tree._bounds) return '<p style="color:#888; text-align:center; padding:40px;">No bracket data available.</p>';
+
+    const b = tree._bounds;
+    const matchW = b.matchW;
+    const matchH = b.matchH;
+    let svgParts = [];
+
+    // Draw connecting lines as curved/arched paths (behind cards)
+    // Uses cubic Bezier curves for smooth organic arcs between parent and child cards
+    function drawCurvedLine(parentX, parentY, childX, childY, isLeft) {
+        const startX = parentX;
+        const startY = parentY;
+        const endX = childX;
+        const endY = childY;
+        const dx = endX - startX;
+        const cp1x = startX + dx * 0.5;
+        const cp1y = startY;
+        const cp2x = endX - dx * 0.5;
+        const cp2y = endY;
+        svgParts.push(`<path class="bk-line" d="M ${startX} ${startY} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${endX} ${endY}" stroke="url(#bk-line-grad)"/>`);
+    }
+
+    function drawLines(node, isLeft) {
+        if (!node) return;
+        const parentEdgeX = node.x + (isLeft ? -(matchW/2) : (matchW/2));
+        const parentY = node.y;
+        if (node.left) {
+            const childEdgeX = node.left.x + (isLeft ? (matchW/2) : -(matchW/2));
+            drawCurvedLine(parentEdgeX, parentY, childEdgeX, node.left.y, isLeft);
+            drawLines(node.left, isLeft);
+        }
+        if (node.right) {
+            const childEdgeX = node.right.x + (isLeft ? (matchW/2) : -(matchW/2));
+            drawCurvedLine(parentEdgeX, parentY, childEdgeX, node.right.y, isLeft);
+            drawLines(node.right, isLeft);
+        }
+    }
+    if (tree.root.left) {
+        drawCurvedLine(tree.root.x - matchW/2, tree.root.y, tree.root.left.x + matchW/2, tree.root.left.y, true);
+        drawLines(tree.root.left, true);
+    }
+    if (tree.root.right) {
+        drawCurvedLine(tree.root.x + matchW/2, tree.root.y, tree.root.right.x - matchW/2, tree.root.right.y, false);
+        drawLines(tree.root.right, false);
+    }
+    if (tree.thirdPlace) {
+        // Third-place: vertical curve from Final downward
+        const startX = tree.root.x;
+        const startY = tree.root.y + matchH/2;
+        const endX = tree.thirdPlace.x;
+        const endY = tree.thirdPlace.y - matchH/2;
+        const midY = (startY + endY) / 2;
+        svgParts.push(`<path class="bk-line" d="M ${startX} ${startY} C ${startX} ${midY}, ${endX} ${midY}, ${endX} ${endY}" stroke-dasharray="5,4"/>`);
+    }
+
+    // Draw match cards
+    function drawMatch(node, depth) {
+        if (!node || !node.match) return;
+        const m = node.match;
+        const x = node.x - matchW / 2;
+        const y = node.y - matchH / 2;
+        const matchId = m.matchId || `${m.home}-${m.away}`;
+        // Map stage codes to readable labels
+        const stageMap = { 'r16': 'R16', 'qf': 'QF', 'sf': 'SF', 'final': 'FINAL', 'thirdPlace': '3RD PLACE', 'round_of_16': 'R16', 'quarter_final': 'QF', 'semi_final': 'SF', 'third_place': '3RD PLACE' };
+        const stageLabel = stageMap[m.stageRaw] || stageMap[m.stage] || (m.stageRaw || m.stage || '').replace(/_/g, ' ').toUpperCase();
+        const homeWon = m.winner === m.home;
+        const awayWon = m.winner === m.away;
+        const homeName = (m.home || '').substring(0, 12);
+        const awayName = (m.away || '').substring(0, 12);
+
+        // Get flag URLs for SVG <image> elements
+        const homeFlagUrl = getTeamFlagUrl(m.home);
+        const awayFlagUrl = getTeamFlagUrl(m.away);
+
+        // Radiating tint: depth 0 = Final (strongest gold), deeper = more transparent
+        const d = depth || 0;
+        const tintOpacity = Math.max(0.1, 0.35 - d * 0.08);
+        const tintFill = `rgba(255, 215, 0, ${tintOpacity})`;
+        const strokeColor = d === 0 ? 'rgba(255,215,0,0.6)' : 'rgba(212,175,55,0.3)';
+
+        svgParts.push(`
+            <g class="bk-match" onclick="window.__bracketMatchClick('${esc(matchId)}')">
+                <rect class="bk-match-rect" x="${x}" y="${y}" width="${matchW}" height="${matchH}" rx="8" style="fill:${tintFill}; stroke:${strokeColor}; stroke-width:1;${d === 0 ? ' filter: url(#bk-glow);' : ''}"/>
+                <text class="bk-text stage" x="${x + 6}" y="${y + 12}">${stageLabel}</text>
+                <image href="${homeFlagUrl}" x="${x + 6}" y="${y + 18}" width="14" height="10" class="bk-flag" onerror="this.style.display='none'"/>
+                <text class="bk-text team ${homeWon ? 'team-won' : ''}" x="${x + 24}" y="${y + 27}">${homeName}</text>
+                <text class="bk-text score" x="${x + matchW - 6}" y="${y + 27}" text-anchor="end">${m.homeScore != null ? m.homeScore : '-'}</text>
+                <image href="${awayFlagUrl}" x="${x + 6}" y="${y + 35}" width="14" height="10" class="bk-flag" onerror="this.style.display='none'"/>
+                <text class="bk-text team ${awayWon ? 'team-won' : ''}" x="${x + 24}" y="${y + 44}">${awayName}</text>
+                <text class="bk-text score" x="${x + matchW - 6}" y="${y + 44}" text-anchor="end">${m.awayScore != null ? m.awayScore : '-'}</text>
+            </g>`);
+    }
+
+    function drawAllMatches(node, depth) {
+        if (!node) return;
+        drawMatch(node, depth || 0);
+        drawAllMatches(node.left, (depth || 0) + 1);
+        drawAllMatches(node.right, (depth || 0) + 1);
+    }
+    drawAllMatches(tree.root, 0);
+    if (tree.thirdPlace) {
+        tree.thirdPlace._x = tree.thirdPlace.x;
+        tree.thirdPlace._y = tree.thirdPlace.y;
+        drawMatch({ match: tree.thirdPlace, x: tree.thirdPlace.x, y: tree.thirdPlace.y }, 1);
+    }
+
+    // Trophy SVG removed per request — match cards speak for themselves
+
+    // SVG defs: glow filter for the Final card and gradient for lines
+    const defs = `<defs>
+        <filter id="bk-glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+            <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <linearGradient id="bk-line-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="rgba(255,215,0,0.05)"/>
+            <stop offset="50%" stop-color="rgba(255,215,0,0.35)"/>
+            <stop offset="100%" stop-color="rgba(255,215,0,0.05)"/>
+        </linearGradient>
+    </defs>`;
+
+    return `<svg viewBox="${b.x} ${b.y} ${b.width} ${b.height}" preserveAspectRatio="xMidYMid meet" style="width:100%; height:100%;">${defs}${svgParts.join('')}</svg>`;
+}
+
+// Calculate available space for the bracket tree.
+// Accounts for:
+// - Top timeline (pinned = takes 98px at top; not pinned = 0px)
+// - Left bracket sidebar (pinned = reserves width minus small overlap allowance)
+// - Right bracket sidebar (pinned = reserves width minus small overlap allowance)
+// Returns the usable width/height AND x-offset for the bracket tree.
+function getAvailableBracketSpace() {
+    let width = window.innerWidth;
+    let height = window.innerHeight;
+    let xOffset = 0;
+
+    // Overlap allowance: how much the bracket tree can overlap the sidebar edge.
+    // This lets the tree use more horizontal space — cards can touch/slightly overlap
+    // the sidebar when both are pinned.
+    const SIDEBAR_OVERLAP = 20; // px of overlap allowed on each side
+
+    // Top timeline: if pinned, reserve 98px at top
+    const timeline = document.getElementById('timeline-wrapper');
+    if (timeline && timeline.classList.contains('pinned')) {
+        height -= 98;
+    }
+
+    // Helper: get the actual rendered width of a pinned sidebar via getBoundingClientRect.
+    // This is more reliable than scrollWidth/offsetWidth for transformed elements.
+    function getSidebarWidth(el) {
+        if (!el) return 220;
+        const rect = el.getBoundingClientRect();
+        return rect.width || el.scrollWidth || el.offsetWidth || 220;
+    }
+
+    // Left bracket sidebar: if pinned, reserve its width (minus overlap) and shift X right
+    const leftBracket = document.getElementById('bracket-left');
+    if (leftBracket && leftBracket.classList.contains('pinned')) {
+        const w = getSidebarWidth(leftBracket);
+        const reserve = Math.max(0, w - SIDEBAR_OVERLAP);
+        width -= reserve;
+        xOffset += reserve;
+    }
+
+    // Right bracket sidebar: if pinned, reserve its width (minus overlap)
+    const rightBracket = document.getElementById('bracket-right');
+    if (rightBracket && rightBracket.classList.contains('pinned')) {
+        const w = getSidebarWidth(rightBracket);
+        const reserve = Math.max(0, w - SIDEBAR_OVERLAP);
+        width -= reserve;
+    }
+
+    return { width: Math.max(400, width), height: Math.max(300, height), xOffset };
+}
+
+// Show/hide the bracket tree
+function toggleBracketTree(show) {
+    const container = document.getElementById('bracket-svg-container');
+    const btn = document.getElementById('bracket-toggle-btn');
+    if (!container || !btn) return;
+
+    if (show === undefined) show = !container.classList.contains('visible');
+
+    if (show) {
+        const space = getAvailableBracketSpace();
+        // Position/size the SVG container to match available space exactly.
+        // This prevents the SVG from overlaying pinned sidebars or the timeline.
+        container.style.left = space.xOffset + 'px';
+        container.style.width = space.width + 'px';
+        const timeline = document.getElementById('timeline-wrapper');
+        if (timeline && timeline.classList.contains('pinned')) {
+            container.style.top = '98px';
+            container.style.height = (space.height) + 'px';
+        } else {
+            container.style.top = '0px';
+            container.style.height = space.height + 'px';
+        }
+
+        if (histLookups.bracket) {
+            const tree = buildBracketTree(histLookups.bracket);
+            console.log('🌳 Bracket tree built:', tree ? `stageCount=${tree.stageCount}, root=${tree.root.match.home} vs ${tree.root.match.away}` : 'null');
+            // Layout uses the reduced width only. xOffset is NOT passed here because
+            // the container is already positioned at left:xOffset — so the SVG's
+            // coordinate 0 is already at the left bar's right edge. Adding xOffset
+            // to centerX would double-shift the tree.
+            layoutBracketTree(tree, space.width, space.height, 0);
+            container.innerHTML = renderBracketSvg(tree);
+        } else {
+            console.log('🌳 No bracket data found for year', histLookups.currentYear);
+            container.innerHTML = '';
+        }
+        container.classList.add('visible');
+        btn.classList.add('active');
+    } else {
+        container.classList.remove('visible');
+        btn.classList.remove('active');
+        // Reset inline styles
+        container.style.left = '';
+        container.style.width = '';
+        container.style.top = '';
+        container.style.height = '';
+    }
+}
+
+// Handle match click from bracket — uses dedicated bracket popup (not tied to map markers)
+window.__bracketMatchClick = function(matchId) {
+    const all = histLookups.allMatches || [];
+    let match = all.find(m => m.id === matchId);
+    if (!match) {
+        match = all.find(m => `${m.homeTeam}-${m.awayTeam}` === matchId || `${m.homeTeam}-${m.awayTeam}-${m.date}` === matchId);
+    }
+    if (match) {
+        const storedMatchId = match.id || `${match.homeTeam}-${match.awayTeam}-${match.date}`;
+        showBracketPopup(storedMatchId);
+    } else {
+        console.warn('Bracket match not found:', matchId);
+    }
+};
+
+// --- DEDICATED BRACKET POPUP ---
+// A standalone HTML overlay that floats above the bracket tree (z-index 2500).
+// Not tied to any map marker. Handles its own navigation (player/team/match clicks).
+let bracketPopupContext = { matchId: null, stadiumId: null };
+
+function showBracketPopup(matchId) {
+    const popup = document.getElementById('bracket-popup');
+    const backdrop = document.getElementById('bracket-popup-backdrop');
+    if (!popup || !backdrop) return;
+
+    const { match: m, stadiumId } = findMatchById(matchId);
+    if (!m) { console.warn('Match not found for bracket popup:', matchId); return; }
+
+    // v160: If we're already showing a bracket popup with a DIFFERENT match, push the
+    // current match onto the stack so Back returns to it. This handles the case where
+    // the user clicks a match from inside a bracket team view (which calls
+    // __teamShowMatch → showBracketPopup). Skip when restoring (window.__navRestoring).
+    if (!window.__navRestoring && bracketPopupContext.matchId && bracketPopupContext.matchId !== matchId) {
+        pushNavState('match', histLookups.currentYear, 'bracket', { matchId: bracketPopupContext.matchId }, 'Match');
+    }
+
+    bracketPopupContext = { matchId, stadiumId };
+    if (stadiumId) currentStadiumContext = stadiumId;
+    currentMatchContext = matchId;
+
+    const html = buildBracketPopupHtml(m);
+    popup.innerHTML = `
+        <div class="leaflet-popup-content-wrapper">
+            <a class="leaflet-popup-close-button" onclick="closeBracketPopup()" style="cursor:pointer;">✕</a>
+            <div class="leaflet-popup-content" style="max-height:80vh; overflow-y:auto;">${html}</div>
+        </div>
+    `;
+    popup.classList.add('visible');
+    backdrop.classList.add('visible');
+}
+
+function closeBracketPopup() {
+    const popup = document.getElementById('bracket-popup');
+    const backdrop = document.getElementById('bracket-popup-backdrop');
+    if (popup) { popup.classList.remove('visible'); popup.innerHTML = ''; }
+    if (backdrop) backdrop.classList.remove('visible');
+    bracketPopupContext = { matchId: null, stadiumId: null };
+    clearNavStack();
+}
+
+// Build match HTML for the bracket popup — uses bracket-specific navigation handlers
+function buildBracketPopupHtml(m) {
+    // Use unified match body builder with bracket context
+    const matchBody = buildMatchBody(m, { context: 'bracket', matchId: bracketPopupContext.matchId });
+
+    return `
+        <div class="hist-popup-content">
+            <div class="hist-card-header"><h2>⚽ ${m.homeTeam} vs ${m.awayTeam}</h2></div>
+            <div class="hist-card-body">
+                ${matchBody}
+                <button class="hist-back-btn" onclick="closeBracketPopup()">Close</button>
+            </div>
+        </div>`;
+}
+
+// Navigation within the bracket popup (player/team views).
+// v160: Uses the unified nav stack so Back works at any depth.
+window.__bracketPopupNav = function(type, name, fromTeam) {
+    const popup = document.getElementById('bracket-popup');
+    if (!popup) return;
+
+    // v160: Push the match we're leaving (bracketPopupContext.matchId) onto the stack
+    // so Back returns to it. Skip when restoring (window.__navRestoring=true).
+    if (!window.__navRestoring && bracketPopupContext.matchId) {
+        pushNavState('match', histLookups.currentYear, 'bracket', { matchId: bracketPopupContext.matchId }, 'Match');
+    }
+
+    if (type === 'player') {
+        const p = histLookups.players[name];
+        const backBtnHtml = navBackBtn('Match');
+        if (!p) {
+            popup.querySelector('.leaflet-popup-content').innerHTML = `<div class="hist-popup-content"><div class="hist-card-body">${backBtnHtml}<h2 style="color:#FFD700;">👤 ${name}</h2><p>Detailed bio not available.</p></div></div>`;
+            return;
+        }
+        const profileHtml = buildPlayerProfile(p, name, fromTeam || p.current_team_context || '', backBtnHtml);
+        popup.querySelector('.leaflet-popup-content').innerHTML = `<div class="hist-popup-content"><div class="hist-card-header"><h2>${flagImg(fromTeam || p.current_team_context || '')} 👤 ${p.name || name}</h2></div><div class="hist-card-body">${profileHtml}</div></div>`;
+        popup.querySelector('.leaflet-popup-content').scrollTop = 0;
+    } else if (type === 'team') {
+        const t = lookupTeam(name); // alias-aware lookup
+        const backBtnHtml = navBackBtn('Match');
+        if (!t) {
+            popup.querySelector('.leaflet-popup-content').innerHTML = `<div class="hist-popup-content"><div class="hist-card-body">${backBtnHtml}<p>No team info available.</p></div></div>`;
+            return;
+        }
+        // v160: Player click handler — opens player in the same bracket popup
+        const playerClickHandler = `window.__bracketPopupNav('player','{NAME}','${esc(name)}')`;
+        // v160: Match click handler — opens match in the same bracket popup (NOT popup context)
+        // Previously match cards used `window.__teamShowMatch(matchId)` which routed to
+        // showMatchDetails (popup) if window.currentMarkerRef was set, opening a stale
+        // marker popup in the background. Now matches stay in the bracket popup.
+        const profileHtml = buildTeamProfile(t, name, backBtnHtml, playerClickHandler, 'bracket');
+        const titleFlag = t.iso ? `<img src="https://flagcdn.com/w40/${t.iso.toLowerCase()}.png" class="hist-flag" onerror="this.style.visibility='hidden'"> ` : '';
+        popup.querySelector('.leaflet-popup-content').innerHTML = `<div class="hist-popup-content"><div class="hist-card-header"><h2>${titleFlag}${t.name || name}</h2></div><div class="hist-card-body">${profileHtml}</div></div>`;
+        popup.querySelector('.leaflet-popup-content').scrollTop = 0;
+    }
+};
+
+// Close bracket popup on backdrop click
+document.getElementById('bracket-popup-backdrop').addEventListener('click', closeBracketPopup);
+
+// Switch to a different year from within a popup or standings overlay.
+// Keeps the current view (popup/standings) open and refreshes the data source.
+window.__switchToYear = async function(year) {
+    // Find the year in the year filter and set it as selected
+    const yearOpt = Array.from(document.querySelectorAll('.year-option')).find(el => parseInt(el.dataset.year, 10) === parseInt(year, 10));
+    if (!yearOpt) {
+        console.warn('Year not found in filter:', year);
+        return;
+    }
+
+    const idx = parseInt(yearOpt.dataset.index, 10);
+    currentYearIndex = idx;
+    selectedYear = parseInt(year, 10);
+
+    // Update the year filter UI
+    updateFisheyeUI();
+    filterAndDraw();
+
+    // Load the historical data for the new year
+    if (parseInt(year, 10) >= 1930) {
+        try {
+            await loadHistoricalData(year);
+        } catch (e) { console.warn(e.message); }
+
+        // Re-render bracket tree if visible
+        const bkContainer = document.getElementById('bracket-svg-container');
+        if (bkContainer && bkContainer.classList.contains('visible')) {
+            toggleBracketTree(true);
+        }
+
+        // Re-render the current view (popup or standings) with the new year's data
+        // We need to figure out what view is currently open and refresh it
+        const overlay = document.getElementById('standings-overlay');
+        if (overlay && overlay.classList.contains('visible')) {
+            // Standings overlay is open — refresh the current view inside it
+            // We need to know what was being viewed. Check if there's a back context.
+            // For now, if currentMatchContext is set, re-show the match; if a team was being viewed, re-show it.
+            // The simplest approach: just refresh the standings groups view
+            // (the user can navigate back to the team/player from there)
+            // Actually, let's try to preserve the context:
+            if (window.__standingsCurrentView === 'team' && window.__standingsCurrentTeam) {
+                standingsShowTeamDetails(window.__standingsCurrentTeam);
+            } else if (window.__standingsCurrentView === 'player' && window.__standingsCurrentPlayer) {
+                standingsShowPlayerDetails(window.__standingsCurrentPlayer, window.__standingsCurrentTeam || '');
+            } else {
+                openStandingsOverlay(); // refresh groups view
+            }
+        } else if (window.currentMarkerRef) {
+            // Popup is open — re-show the current view
+            if (currentMatchContext) {
+                showMatchDetails(currentMatchContext, window.currentMarkerRef);
+            } else if (currentStadiumContext) {
+                showStadiumDetails(currentStadiumContext, window.currentMarkerRef);
+            }
+        }
+    }
+};
+
+// --- NEWS TICKER ---
+// Builds a scrolling crawl of trivia facts. Uses trivia.id as the headline (title)
+// and trivia.fact as the body. The track is duplicated for seamless infinite scroll.
+function updateNewsTicker(trivia) {
+    const ticker = document.getElementById('news-ticker');
+    const track = document.getElementById('ticker-track');
+    if (!ticker || !track) return;
+
+    if (!Array.isArray(trivia) || trivia.length === 0) {
+        ticker.classList.remove('visible');
+        track.innerHTML = '';
+        return;
+    }
+
+    // Build one item per trivia fact. Headline = id (prettified), body = fact text.
+    const items = trivia.map(t => {
+        // Prettify the id: "1982-disgrace-of-gijon" → "Disgrace Of Gijón"
+        const headline = (t.id || '')
+            .replace(/^\d{4}-/, '') // strip leading year
+            .replace(/-/g, ' ')
+            .replace(/\b\w/g, c => c.toUpperCase());
+        const fact = (t.fact || '').replace(/"/g, '&quot;');
+        return `<span class="ticker-item"><span class="ti-headline">${headline}</span><span class="ti-fact">${fact}</span><span class="ti-sep">●</span></span>`;
+    }).join('');
+
+    // Duplicate the content so the scroll loops seamlessly (translateX(-50%))
+    track.innerHTML = items + items;
+    ticker.classList.add('visible');
+
+    // Reset animation
+    track.style.animation = 'none';
+    void track.offsetWidth; // reflow
+    track.style.animation = '';
+}
+
+// --- STANDINGS OVERLAY ---
+// Opens a full-screen modal showing all groups as cards in a grid.
+// Clicking a team name shows team details (reuses showTeamDetails logic
+// but rendered inside the overlay instead of a popup).
+
+function openStandingsOverlay() {
+    const overlay = document.getElementById('standings-overlay');
+    const body = document.getElementById('standings-body');
+    const title = document.getElementById('standings-title');
+    if (!overlay || !body) return;
+
+    const standings = histLookups.standings;
+    if (!standings || !standings.groups) {
+        body.innerHTML = '<p style="color:#888; text-align:center; padding:40px;">No standings data available for this year.</p>';
+        title.textContent = `Standings — ${histLookups.currentYear || ''}`;
+        overlay.classList.add('visible');
+        return;
+    }
+
+    title.innerHTML = `🏆 ${histLookups.currentYear || ''} World Cup — Group Standings`;
+
+    // Render all groups as cards in a grid
+    const groupsHtml = Object.entries(standings.groups).map(([groupKey, teams]) => {
+        const sortedTeams = teams.slice().sort((a, b) => (a.position || 99) - (b.position || 99));
+        const rows = sortedTeams.map(t => {
+            const adv = t.advanced ? 'advanced' : '';
+            return `<tr class="${adv}">
+                <td>${t.position || ''}</td>
+                <td onclick="window.standingsShowTeam('${esc(t.team)}')">${flagImg(t.team)} ${t.team}</td>
+                <td>${t.played || 0}</td>
+                <td>${t.won || 0}</td>
+                <td>${t.drawn || 0}</td>
+                <td>${t.lost || 0}</td>
+                <td>${t.goalsFor || 0}-${t.goalsAgainst || 0}</td>
+                <td>${t.goalDifference != null ? (t.goalDifference > 0 ? '+' : '') + t.goalDifference : '0'}</td>
+                <td class="pts">${t.points || 0}</td>
+            </tr>`;
+        }).join('');
+        return `<div class="standings-group-card">
+            <div class="sgc-title">Group ${groupKey}</div>
+            <table class="standings-table">
+                <thead><tr>
+                    <th>#</th><th>Team</th><th>P</th><th>W</th><th>D</th><th>L</th><th>GF-GA</th><th>GD</th><th>Pts</th>
+                </tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>`;
+    }).join('');
+
+    body.innerHTML = `
+        <div class="standings-groups">${groupsHtml}</div>
+    `;
+
+    // Store the groups HTML globally so the back button can restore it
+    window.standingsGroupsHtml = groupsHtml;
+
+    // v161: Initialize the standings view state to 'groups' so the first team/player
+    // click pushes 'groups' onto the nav stack correctly. Without this, the initial
+    // view state is undefined, and the check `__standingsCurrentView !== 'team'` would
+    // be TRUE (correctly pushing 'groups'), but only by accident. Setting it explicitly
+    // makes the logic clear and robust.
+    window.__standingsCurrentView = 'groups';
+    window.__standingsCurrentTeam = null;
+    window.__standingsCurrentPlayer = null;
+    // v161: Clear the nav stack — opening the standings overlay is a fresh navigation root.
+    clearNavStack();
+
+    overlay.classList.add('visible');
+}
+
+function closeStandingsOverlay() {
+    const overlay = document.getElementById('standings-overlay');
+    if (overlay) overlay.classList.remove('visible');
+    clearNavStack();
+}
+
+// Show team details inside the standings overlay — uses shared buildTeamProfile.
+// v160: Uses unified navStack. Pushes "groups" view when called from groups (forward nav only).
+// Keeps the "← Standings" back button so user can return to groups from a team view.
+function standingsShowTeamDetails(teamName) {
+    const body = document.getElementById('standings-body');
+    if (!body) return;
+
+    const t = lookupTeam(teamName); // alias-aware lookup
+
+    // v160: Push the groups view (or whatever we're leaving) onto the stack.
+    // Skip when restoring (window.__navRestoring=true).
+    if (!window.__navRestoring) {
+        // If we're leaving a match or player view, push that. Otherwise push groups.
+        if (window.__standingsCurrentView === 'match' && currentMatchContext) {
+            pushNavState('match', histLookups.currentYear, 'standings', { matchId: currentMatchContext }, 'Match');
+        } else if (window.__standingsCurrentView === 'player' && window.__standingsCurrentPlayer) {
+            pushNavState('player', histLookups.currentYear, 'standings', { playerName: window.__standingsCurrentPlayer, fromTeam: window.__standingsCurrentTeam || '' }, window.__standingsCurrentPlayer);
+        } else if (window.__standingsCurrentView !== 'team') {
+            // Coming from groups view (or no prior view)
+            pushNavState('groups', histLookups.currentYear, 'standings', {}, 'Standings');
+        }
+    }
+
+    // Track current view for year-switch refresh
+    window.__standingsCurrentView = 'team';
+    window.__standingsCurrentTeam = teamName;
+    window.__standingsCurrentPlayer = null;
+
+    // Back button — uses the unified nav stack so it works at any depth.
+    // Label comes from the top of the stack (e.g. "Standings" from groups, "Match" from match).
+    const backBtnHtml = `<button class="standings-back-btn" onclick="window.__navBack()">← Back</button>`;
+
+    if (!t) {
+        body.innerHTML = `${backBtnHtml}<p style="color:#888; padding:20px;">No detailed team info available for ${teamName}.</p>`;
+        return;
+    }
+
+    // Player click handler for standings overlay context — opens player in the overlay
+    // v160: Use __navHandler so the team gets pushed onto the stack before navigating.
+    const playerClickHandler = `window.__navHandler('player','{NAME}','${esc(teamName)}','standings')`;
+
+    const profileHtml = buildTeamProfile(t, teamName, backBtnHtml, playerClickHandler);
+    const titleFlag = t.iso ? `<img src="https://flagcdn.com/w40/${t.iso.toLowerCase()}.png" class="hist-flag" onerror="this.style.visibility='hidden'"> ` : '';
+
+    body.innerHTML = `
+        <h2 style="color:#FFD700; margin:0 0 12px; font-size:1.3rem;">${titleFlag}${t.name || teamName}</h2>
+        ${profileHtml}
+    `;
+    body.scrollTop = 0;
+}
+
+// Show player details inside the standings overlay — uses shared buildPlayerProfile.
+// v160: Uses unified navStack so Back works at any depth.
+function standingsShowPlayerDetails(playerName, fromTeam) {
+    const body = document.getElementById('standings-body');
+    if (!body) return;
+
+    // v160: Push the view we're leaving (team or match) onto the stack.
+    if (!window.__navRestoring) {
+        if (window.__standingsCurrentView === 'match' && currentMatchContext) {
+            pushNavState('match', histLookups.currentYear, 'standings', { matchId: currentMatchContext }, 'Match');
+        } else if (window.__standingsCurrentView === 'team' && window.__standingsCurrentTeam) {
+            pushNavState('team', histLookups.currentYear, 'standings', { teamName: window.__standingsCurrentTeam }, window.__standingsCurrentTeam);
+        } else if (fromTeam) {
+            // Coming from a team view (fromTeam provided)
+            pushNavState('team', histLookups.currentYear, 'standings', { teamName: fromTeam }, fromTeam);
+        } else if (window.__standingsCurrentView !== 'player') {
+            pushNavState('groups', histLookups.currentYear, 'standings', {}, 'Standings');
+        }
+    }
+
+    // Track current view for year-switch refresh
+    window.__standingsCurrentView = 'player';
+    window.__standingsCurrentPlayer = playerName;
+    window.__standingsCurrentTeam = fromTeam;
+
+    const p = histLookups.players[playerName];
+    // Back button — uses the unified nav stack so it works at any depth
+    const backBtnHtml = `<button class="standings-back-btn" onclick="window.__navBack()">← Back</button>`;
+
+    if (!p) {
+        body.innerHTML = `${backBtnHtml}<h2 style="color:#FFD700;">👤 ${playerName}</h2><p style="color:#888;">Detailed bio not available.</p>`;
+        return;
+    }
+
+    const fromTeamData = fromTeam ? lookupTeam(fromTeam) : null;
+    const titleFlag = (fromTeamData && fromTeamData.iso)
+        ? `<img src="https://flagcdn.com/w40/${fromTeamData.iso.toLowerCase()}.png" class="hist-flag" onerror="this.style.visibility='hidden'"> ` : '';
+
+    // Use the shared profile builder — identical layout to the popup version
+    const profileHtml = buildPlayerProfile(p, playerName, fromTeam, backBtnHtml);
+
+    body.innerHTML = `
+        <h2 style="color:#FFD700; margin:0 0 12px; font-size:1.3rem;">${titleFlag}👤 ${p.name || playerName}</h2>
+        ${profileHtml}
+    `;
+    // Scroll to top of the overlay body
+    body.scrollTop = 0;
+}
+
+        // --- HISTORICAL POPUP NAVIGATION (SIDEBAR-STYLE) ---
+        // The popup behaves like the index.html sidebar: a persistent panel whose
+        // content swaps in place when you navigate between Stadium → Match →
+        // Player/Team. Clicking another marker closes the current popup and opens
+        // the newly-clicked stadium (Leaflet autoClose handles this).
+
+        // Build the outer popup shell (header + scrollable body). Each show* function
+        // only needs to provide { title, body } — the shell stays put, so there's
+        // no flicker between views.
+        function popupShell(titleHtml, bodyHtml) {
+            return `
+                <div class="hist-popup-content">
+                    <div class="hist-card-header"><h2>${titleHtml}</h2></div>
+                    <div class="hist-card-body">${bodyHtml}</div>
+                </div>`;
+        }
+
+        // Helper to escape single quotes / backslashes in names that get injected
+        // into inline onclick="..." attributes.
+        function esc(s) {
+            return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        }
+
+        // Team name aliases — maps FIFA official names to common names (and vice versa)
+        // Used for matching teams in matches_FULL when team names differ between data sources
+        const TEAM_NAME_ALIASES = {
+            'Korea Republic': 'South Korea',
+            'South Korea': 'Korea Republic',
+            'IR Iran': 'Iran',
+            'Iran': 'IR Iran',
+            'Cabo Verde': 'Cape Verde',
+            'Cape Verde': 'Cabo Verde',
+            'Türkiye': 'Turkey',
+            'Turkey': 'Türkiye',
+            "Côte d'Ivoire": 'Ivory Coast',
+            'Ivory Coast': "Côte d'Ivoire",
+            'USA': 'United States',
+            'United States': 'USA'
+        };
+
+        // Check if a match involves a team (handles name aliases)
+        function matchInvolvesTeam(match, teamName) {
+            if (!match) return false;
+            const homeTeam = match.homeTeam || match.home || '';
+            const awayTeam = match.awayTeam || match.away || '';
+            if (homeTeam === teamName || awayTeam === teamName) return true;
+            // Check alias
+            const alias = TEAM_NAME_ALIASES[teamName];
+            if (alias && (homeTeam === alias || awayTeam === alias)) return true;
+            return false;
+        }
+
+        // Look up a team in histLookups.teams by name (handles aliases)
+        function lookupTeam(teamName) {
+            if (!teamName) return null;
+            if (histLookups.teams[teamName]) return histLookups.teams[teamName];
+            const alias = TEAM_NAME_ALIASES[teamName];
+            if (alias && histLookups.teams[alias]) return histLookups.teams[alias];
+            return null;
+        }
+
+        // Helper to build a flag <img> with onerror fallback (hides if iso missing).
+        // Dissolved/historical nations fallback (only used if flagUrl is missing from data)
+        const DISSOLVED_NATIONS_FALLBACK = {
+            'Soviet Union': 'https://upload.wikimedia.org/wikipedia/commons/a/a9/Flag_of_the_Soviet_Union.svg',
+            'West Germany': 'https://upload.wikimedia.org/wikipedia/commons/b/ba/Flag_of_Germany.svg',
+            'East Germany': 'https://upload.wikimedia.org/wikipedia/commons/4/41/Flag_of_East_Germany.svg',
+            'Yugoslavia': 'https://upload.wikimedia.org/wikipedia/commons/6/61/Flag_of_Yugoslavia_%281946-1992%29.svg',
+            'Czechoslovakia': 'https://upload.wikimedia.org/wikipedia/commons/3/3a/Flag_of_Czechoslovakia.svg',
+            'Serbia and Montenegro': 'https://upload.wikimedia.org/wikipedia/commons/4/4d/Flag_of_Serbia_and_Montenegro.svg',
+            'Zaire': 'https://upload.wikimedia.org/wikipedia/commons/9/9f/Flag_of_Zaire.svg',
+            'Dutch East Indies': 'https://upload.wikimedia.org/wikipedia/commons/5/5c/Flag_of_the_Netherlands.svg'
+        };
+
+        function flagImg(teamName, sizeClass) {
+            const cls = sizeClass === 'lg' ? 'hist-flag lg' : 'hist-flag';
+            const teamData = lookupTeam(teamName); // alias-aware lookup
+            const w = sizeClass === 'lg' ? 'w80' : 'w40';
+
+            // Priority 1: Use flagUrl from teams_summary data — but skip "unknown.svg" placeholders
+            if (teamData && teamData.flag && teamData.flag.flagUrl && !teamData.flag.flagUrl.includes('unknown.svg')) {
+                return `<img src="${teamData.flag.flagUrl}" class="${cls}" alt="${teamName || ''}" onerror="this.style.visibility='hidden'">`;
+            }
+
+            // Priority 1b: Use fifaCode for UK subnations (ENG, SCO, NIR, WAL) → flagcdn gb-* codes
+            if (teamData && teamData.flag && teamData.flag.fifaCode) {
+                const fifa = teamData.flag.fifaCode.toUpperCase();
+                const ukMap = { 'ENG': 'gb-eng', 'SCO': 'gb-sct', 'NIR': 'gb-nir', 'WAL': 'gb-wls' };
+                if (ukMap[fifa]) {
+                    return `<img src="https://flagcdn.com/${w}/${ukMap[fifa]}.png" class="${cls}" alt="${teamName || ''}" onerror="this.style.visibility='hidden'">`;
+                }
+            }
+
+            // Priority 2: Use getFlagUrl() — handles iso codes, 3-letter codes, and name mappings
+            const flagUrl = getFlagUrl(teamName);
+            if (flagUrl && !flagUrl.endsWith(FLAG_FALLBACK)) {
+                const lgUrl = sizeClass === 'lg' ? flagUrl.replace('w40', 'w80') : flagUrl;
+                return `<img src="${lgUrl}" class="${cls}" alt="${teamName || ''}" onerror="this.style.visibility='hidden'">`;
+            }
+
+            // Priority 3: Use iso code directly from teams_summary
+            const iso = teamData && teamData.iso;
+            if (iso) {
+                return `<img src="https://flagcdn.com/${w}/${iso.toLowerCase()}.png" class="${cls}" alt="${teamName || ''}" onerror="this.style.visibility='hidden'">`;
+            }
+
+            // Priority 4: Use flag.iso from teams_summary
+            if (teamData && teamData.flag && teamData.flag.iso) {
+                return `<img src="https://flagcdn.com/${w}/${teamData.flag.iso.toLowerCase()}.png" class="${cls}" alt="${teamName || ''}" onerror="this.style.visibility='hidden'">`;
+            }
+
+            // Priority 5: Fallback for known dissolved nations (hardcoded URLs)
+            if (teamName && DISSOLVED_NATIONS_FALLBACK[teamName]) {
+                return `<img src="${DISSOLVED_NATIONS_FALLBACK[teamName]}" class="${cls}" alt="${teamName}" onerror="this.style.visibility='hidden'">`;
+            }
+
+            // Priority 6: Last resort — blank flag
+            return `<img src="${FLAG_FALLBACK}" class="${cls}" alt="${teamName || ''}">`;
+        }
+
+        // Returns just the flag URL string (for SVG <image> elements in bracket tree)
+        function getTeamFlagUrl(teamName) {
+            const teamData = lookupTeam(teamName); // alias-aware lookup
+
+            // Skip unknown.svg placeholders
+            if (teamData && teamData.flag && teamData.flag.flagUrl && !teamData.flag.flagUrl.includes('unknown.svg')) {
+                return teamData.flag.flagUrl;
+            }
+
+            // UK subnations via fifaCode
+            if (teamData && teamData.flag && teamData.flag.fifaCode) {
+                const fifa = teamData.flag.fifaCode.toUpperCase();
+                const ukMap = { 'ENG': 'gb-eng', 'SCO': 'gb-sct', 'NIR': 'gb-nir', 'WAL': 'gb-wls' };
+                if (ukMap[fifa]) return `https://flagcdn.com/w40/${ukMap[fifa]}.png`;
+            }
+
+            // getFlagUrl handles name mappings
+            const url = getFlagUrl(teamName);
+            if (!url.endsWith(FLAG_FALLBACK)) return url;
+
+            // Direct iso
+            if (teamData && teamData.iso) return `https://flagcdn.com/w40/${teamData.iso.toLowerCase()}.png`;
+            if (teamData && teamData.flag && teamData.flag.iso) return `https://flagcdn.com/w40/${teamData.flag.iso.toLowerCase()}.png`;
+
+            // Dissolved nations fallback
+            if (teamName && DISSOLVED_NATIONS_FALLBACK[teamName]) return DISSOLVED_NATIONS_FALLBACK[teamName];
+
+            return FLAG_FALLBACK;
+        }
+
+        // ==========================================
+        // PHOTO HELPERS (v161 — Wikipedia manifest-based)
+        // ==========================================
+        // Replaces the old local-file approach (v155-v160) which had:
+        //   - Multiple naming-scheme workarounds (FirstName_LASTNAME.jpg, .png,
+        //     KIM_Seunggyu.jpg, etc.) causing 6+ failed requests per player
+        //   - Stateful onerror fallback chain that could infinite-loop
+        //   - Incomplete roster coverage (only a few years had local photos)
+        //
+        // New approach (v161):
+        //   1. A pre-built manifest (hist_data/player_photos_manifest.json) maps
+        //      every player/coach/ref name to their Wikipedia thumbnail URL.
+        //      The manifest is generated by scripts/fetch_player_photos.js.
+        //   2. getPlayerPhotoHtml does an O(1) JSON lookup — no API calls,
+        //      no naming-scheme retries, no console errors.
+        //   3. Year-specific photos: manifest[name].byYear[year] (from Commons search)
+        //   4. Default photo: manifest[name].default (from Wikipedia REST API)
+        //   5. Fallback: img/icons/playernot.svg (or coachnot.svg)
+        //
+        // The manifest is loaded async at startup — until it loads, photos show
+        // the fallback SVG. Once loaded, all photo lookups are instant.
+
+        // The manifest is loaded into window.PLAYER_PHOTO_MANIFEST by the
+        // <script> tag that includes hist_data/player_photos_manifest.json.
+        // (See the script-loading section near the top of the file.)
+        // If the file doesn't exist yet, window.PLAYER_PHOTO_MANIFEST is null
+        // and all photos fall back to playernot.svg/coachnot.svg.
+
+        /**
+         * Look up a photo URL for a player/coach/ref by name and year.
+         *
+         * @param {string} name - The entity's display name (e.g. "Lionel Messi")
+         * @param {number} year - The WC year (e.g. 2022). Optional.
+         * @returns {string|null} - The photo URL, or null if not in manifest.
+         */
+        function lookupPhotoUrl(name, year) {
+            if (!name) return null;
+            const manifest = window.PLAYER_PHOTO_MANIFEST;
+            if (!manifest) return null;
+            const entry = manifest[name];
+            if (!entry) return null;
+            // Year-specific photo (preferred)
+            if (year && entry.byYear && entry.byYear[String(year)]) {
+                return entry.byYear[String(year)];
+            }
+            // Default photo (most recent)
+            if (entry.default) {
+                return entry.default;
+            }
+            return null;
+        }
+
+        /**
+         * Returns an <img> element string for a player photo.
+         * Uses the Wikipedia manifest for O(1) lookup — no naming-scheme retries.
+         *
+         * @param {string} playerName - e.g. "Lionel Messi"
+         * @param {string} teamName - e.g. "Argentina" (unused in v161, kept for compat)
+         * @param {string} sizeClass - 'thumb' for roster rows, 'full' for profile header
+         * @returns {string} - HTML string for <img> element
+         */
+        function getPlayerPhotoHtml(playerName, teamName, sizeClass) {
+            // v161: Look up photo URL in the Wikipedia manifest.
+            // Year-specific photo is preferred (e.g. Messi 2022 → 2022 WC photo),
+            // then default photo (most recent), then playernot.svg fallback.
+            const year = parseInt(histLookups.currentYear, 10);
+            const url = lookupPhotoUrl(playerName, year);
+            const notFoundSrc = 'img/icons/playernot.svg';
+            const cls = sizeClass === 'thumb' ? 'hist-squad-thumb' : 'hist-player-photo';
+
+            if (!url) {
+                // Not in manifest — use the fallback SVG directly.
+                // No onerror needed (SVG always exists), no retries, no console errors.
+                return `<img src="${notFoundSrc}" class="${cls}" alt="${esc(playerName)}" style="object-fit:contain;">`;
+            }
+
+            // Use the Wikipedia URL. If it 404s (rare — Wikipedia URLs are stable),
+            // fall back to playernot.svg and detach onerror (no retry loop).
+            const onerrorJs = "this.onerror=null;this.src='" + notFoundSrc + "';this.style.objectFit='contain';";
+            return `<img src="${url}" class="${cls}" alt="${esc(playerName)}" onerror="${onerrorJs}" referrerpolicy="no-referrer">`;
+        }
+
+        /**
+         * Returns an <img> element string for a coach photo.
+         * Same manifest-based approach as getPlayerPhotoHtml.
+         *
+         * @param {string} coachName - e.g. "Lionel Scaloni"
+         * @param {string} teamName - unused in v161, kept for compat
+         * @returns {string} - HTML string for <img> element
+         */
+        function getCoachPhotoHtml(coachName, teamName) {
+            // v161: Coaches use the same manifest as players. Year-specific photos
+            // are rare for coaches (manifest usually only has default), but the
+            // lookup logic handles it.
+            const year = parseInt(histLookups.currentYear, 10);
+            const url = lookupPhotoUrl(coachName, year);
+            const notFoundSrc = 'img/icons/coachnot.svg';
+
+            if (!url) {
+                return `<img src="${notFoundSrc}" class="hist-coach-photo" alt="${esc(coachName)}" style="object-fit:contain;">`;
+            }
+
+            const onerrorJs = "this.onerror=null;this.src='" + notFoundSrc + "';this.style.objectFit='contain';";
+            return `<img src="${url}" class="hist-coach-photo" alt="${esc(coachName)}" onerror="${onerrorJs}" referrerpolicy="no-referrer">`;
+        }
+
+        /**
+         * Returns an <img> element string for a referee photo. (NEW in v161)
+         * Refs are in the same manifest as players/coaches.
+         *
+         * @param {string} refName - e.g. "Pierluigi Collina"
+         * @returns {string} - HTML string for <img> element
+         */
+        function getRefPhotoHtml(refName) {
+            const url = lookupPhotoUrl(refName, null);
+            const notFoundSrc = 'img/icons/coachnot.svg';  // reuse coachnot for refs
+
+            if (!url) {
+                return `<img src="${notFoundSrc}" class="hist-coach-photo" alt="${esc(refName)}" style="object-fit:contain;">`;
+            }
+
+            const onerrorJs = "this.onerror=null;this.src='" + notFoundSrc + "';this.style.objectFit='contain';";
+            return `<img src="${url}" class="hist-coach-photo" alt="${esc(refName)}" onerror="${onerrorJs}" referrerpolicy="no-referrer">`;
+        }
+
+        // Legacy function kept for backward compat — some older code may still call it.
+        // Returns null always (manifest lookup replaces it).
+        function getPlayerPhotoSrc(playerName, teamName) {
+            const year = parseInt(histLookups.currentYear, 10);
+            const url = lookupPhotoUrl(playerName, year);
+            return url ? { src: url, fallbackPaths: [] } : null;
+        }
+
+        // --- Timeline event icons (inline SVG — no external files needed) ---
+        // Soccer ball for goals
+        const ICON_GOAL = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/><polygon points="12,7 8.5,9.3 9.8,13 14.2,13 15.5,9.3" fill="#1a1a1a"/><line x1="12" y1="3" x2="12" y2="7" stroke="#1a1a1a" stroke-width="1.2" stroke-linecap="round"/><line x1="4.5" y1="8" x2="8" y2="9.5" stroke="#1a1a1a" stroke-width="1.2" stroke-linecap="round"/><line x1="19.5" y1="8" x2="16" y2="9.5" stroke="#1a1a1a" stroke-width="1.2" stroke-linecap="round"/><line x1="5" y1="17" x2="9.5" y2="13.5" stroke="#1a1a1a" stroke-width="1.2" stroke-linecap="round"/><line x1="19" y1="17" x2="14.5" y2="13.5" stroke="#1a1a1a" stroke-width="1.2" stroke-linecap="round"/></svg>`;
+        // Yellow card
+        const ICON_CARD_Y = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="5" y="2" width="13" height="20" rx="2" fill="#f1c40f" stroke="#b7950b" stroke-width="1"/><rect x="5" y="2" width="13" height="20" rx="2" fill="none" stroke="rgba(0,0,0,0.15)" stroke-width="0.5"/></svg>`;
+        // Red card
+        const ICON_CARD_R = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="5" y="2" width="13" height="20" rx="2" fill="#e74c3c" stroke="#922b21" stroke-width="1"/><rect x="5" y="2" width="13" height="20" rx="2" fill="none" stroke="rgba(0,0,0,0.15)" stroke-width="0.5"/></svg>`;
+        // Bi-directional arrow for substitutions
+        const ICON_SUB = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#3498db" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="7,7 3,12 7,17"/><polyline points="17,7 21,12 17,17"/><line x1="3" y1="12" x2="21" y2="12"/></svg>`;
+
+        // Central popup updater. Binds a popup on first call; on subsequent calls
+        // just swaps content + calls update() to re-measure. No close/reopen → no flicker.
+        // If popup was closed (via X button), unbinds and rebinds fresh to avoid stale state.
+        function updatePopupContent(marker, html) {
+            if (!marker) return;
+            if (!marker.getPopup()) {
+                marker.bindPopup(html, {
+                    closeButton: true,
+                    maxWidth: 500,
+                    minWidth: 460,
+                    className: 'hist-popup',
+                    autoClose: true,      // clicking another marker closes this one
+                    closeOnClick: false,  // clicking inside popup does NOT close it
+                    autoPan: true,
+                    autoPanPadding: [20, 20]
+                });
+                marker.openPopup();
+            } else {
+                const popup = marker.getPopup();
+                // If popup is closed, unbind and rebind fresh (avoids stale state after X button close)
+                if (!marker.isPopupOpen()) {
+                    marker.unbindPopup();
+                    marker.bindPopup(html, {
+                        closeButton: true,
+                        maxWidth: 500,
+                        minWidth: 460,
+                        className: 'hist-popup',
+                        autoClose: true,
+                        closeOnClick: false,
+                        autoPan: true,
+                        autoPanPadding: [20, 20]
+                    });
+                    marker.openPopup();
+                } else {
+                    popup.setContent(html);
+                    popup.update();
+                    const body = popup.getElement && popup.getElement().querySelector('.hist-card-body');
+                    if (body) body.scrollTop = 0;
+                }
+            }
+        }
+
+        function showStadiumDetails(stadiumId, marker) {
+            window.currentMarkerRef = marker;
+            currentStadiumContext = stadiumId;
+            currentMatchContext = null;
+
+            const stadium = histLookups.stadiums[stadiumId];
+            if (!stadium) {
+                updatePopupContent(marker, popupShell('Stadium', '<p>Stadium data not found.</p>'));
+                return;
+            }
+
+            const matchesArr = Array.isArray(stadium.matches) ? stadium.matches : [];
+            const matchesHtml = matchesArr.slice().sort((a, b) => new Date(a.date) - new Date(b.date)).map(m => `
+                <div class="hist-item" onclick="window.currentMarkerRef && showMatchDetails('${esc(m.id)}', window.currentMarkerRef)">
+                    <div class="hist-item-main">
+                        ${flagImg(m.homeTeam)}
+                        <span>${m.homeTeam || ''}</span>
+                        <span class="hist-score">${m.homeScore}-${m.awayScore}</span>
+                        <span>${m.awayTeam || ''}</span>
+                        ${flagImg(m.awayTeam)}
+                    </div>
+                    <span class="hist-badge bg-blue">${(m.stage || '').replace('_', ' ')}</span>
+                </div>
+            `).join('');
+
+            const body = `
+                <div class="hist-stat-grid">
+                    <div class="hist-stat-box"><span class="hist-stat-val">${stadium.city || 'N/A'}</span><span class="hist-stat-lbl">City</span></div>
+                    <div class="hist-stat-box"><span class="hist-stat-val">${stadium.capacity ? stadium.capacity.toLocaleString() : 'N/A'}</span><span class="hist-stat-lbl">Capacity</span></div>
+                </div>
+                <h3>Matches Played (${matchesArr.length})</h3>
+                <div class="hist-list">${matchesHtml || '<p>No matches recorded.</p>'}</div>
+            `;
+            updatePopupContent(marker, popupShell(`🏟️ ${stadium.name || 'Stadium'}`, body));
+        }
+
+        function findMatchById(matchId) {
+            for (const key of Object.keys(histLookups.stadiums)) {
+                const stadium = histLookups.stadiums[key];
+                if (Array.isArray(stadium.matches)) {
+                    const found = stadium.matches.find(x => x.id === matchId);
+                    if (found) return { match: found, stadiumId: key };
+                }
+            }
+            return { match: null, stadiumId: null };
+        }
+
+        // Find all matches involving a team (home or away), sorted chronologically
+        function findMatchesByTeam(teamName) {
+            const all = histLookups.allMatches || [];
+            return all.filter(m =>
+                m.homeTeam === teamName || m.awayTeam === teamName
+            ).sort((a, b) => new Date(a.date) - new Date(b.date));
+        }
+
+        // Find a match by team + opponent (either side) — used for knockout path wiring
+        function findMatchByTeams(teamA, teamB) {
+            const all = histLookups.allMatches || [];
+            return all.find(m =>
+                (m.homeTeam === teamA && m.awayTeam === teamB) ||
+                (m.homeTeam === teamB && m.awayTeam === teamA)
+            );
+        }
+
+        // Normalize a knockout stage code to a readable label
+        function koStageLabel(stage) {
+            const map = { 'r16': 'R16', 'qf': 'QF', 'sf': 'SF', 'final': 'Final', '3rd': '3rd' };
+            return map[stage] || (stage || '').toUpperCase();
+        }
+
+        // ==========================================
+        // UNIFIED MATCH BODY BUILDER (Phase 2.1)
+        // ==========================================
+        // Generates the shared match body HTML (teams, score, weather, timeline, lineups,
+        // ref/stadium clickable). Used by popup, standings, and bracket match views.
+        //
+        // navContext determines how clickable elements route:
+        //   { context: 'popup', marker, matchId }
+        //   { context: 'bracket', matchId }
+        //   { context: 'standings', matchId }
+        //
+        // The caller wraps this body in their own shell (popupShell, standings body, bracket popup).
+
+        // Render formation pitch SVG with bench — uses the SAME pitch path and position logic as the replay
+        // but renders statically (no animation, no event highlights)
+        function renderFormationPitch(m, nav) {
+            const homeLineup = ((m.lineups && m.lineups.home) || []).filter(p => p.starter);
+            const awayLineup = ((m.lineups && m.lineups.away) || []).filter(p => p.starter);
+            const homeBench = ((m.lineups && m.lineups.home) || []).filter(p => !p.starter);
+            const awayBench = ((m.lineups && m.lineups.away) || []).filter(p => !p.starter);
+            const homeSubs = (m.substitutions || []).filter(s => s.team === 'home' || (!s.team && homeLineup.some(p => p.player === s.off)));
+            const awaySubs = (m.substitutions || []).filter(s => s.team === 'away' || (!s.team && awayLineup.some(p => p.player === s.off)));
+
+            // Group players by position using the replay's groupByPos (handles RB, CB, CM, ST, etc.)
+            const homeFormation = m.formations ? m.formations.home : null;
+            const awayFormation = m.formations ? m.formations.away : null;
+            const homeGroups = groupByPos(homeLineup, homeFormation);
+            const awayGroups = groupByPos(awayLineup, awayFormation);
+
+            // Compute positions using the replay's logic
+            const homePositions = computePlayerPositions(homeGroups, 'home');
+            const awayPositions = computePlayerPositions(awayGroups, 'away');
+
+            // Render player icon (static version — no highlight, clickable, with tooltip data)
+            function renderStaticPlayerIcon(p, side) {
+                const player = p.player || {};
+                const x = p.x.toFixed(2);
+                const y = p.y.toFixed(2);
+                const num = player.number || '';
+                const name = player.player || player.name || 'Unknown';
+                const pos = player.position || '';
+                const isCaptain = !!player.captain;
+                const r = 3.6;
+                const fontSize = 3.2;
+                const fill = side === 'home' ? 'rgba(74,143,231,0.8)' : 'rgba(231,76,60,0.8)';
+                const stroke = side === 'home' ? '#4a8fe7' : '#e74c3c';
+                const numText = num ? '<text x="' + x + '" y="' + y + '" text-anchor="middle" dominant-baseline="central" fill="#fff" font-size="' + fontSize + '" font-weight="700" font-family="Courier New">' + esc(num) + '</text>' : '';
+                const capText = isCaptain ? '<text x="' + x + '" y="' + (parseFloat(y) - 4.5).toFixed(2) + '" text-anchor="middle" fill="#FFD700" font-size="2.5">C</text>' : '';
+                return '<g class="fp-player" data-player-name="' + esc(name) + '" data-player-pos="' + esc(pos) + '" onclick="window.__navHandler(\'player\',\'' + esc(name) + '\',\'' + esc(side === 'home' ? m.homeTeam : m.awayTeam) + '\',\'' + nav.context + '\')" style="cursor:pointer;">' +
+                    '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="' + fill + '" stroke="' + stroke + '" stroke-width="0.5"/>' +
+                    numText + capText +
+                    '</g>';
+            }
+
+            // Build player icons
+            const homeIcons = homePositions.map(p => renderStaticPlayerIcon(p, 'home')).join('');
+            const awayIcons = awayPositions.map(p => renderStaticPlayerIcon(p, 'away')).join('');
+
+            // Bench (static — show all bench players, highlight subs that came on)
+            const benchSpread = 55;
+            const benchXPan = -4;
+            const benchY = REPLAY_PITCH.viewBoxH + REPLAY_BENCH_PARAMS.yPan; // -5.26
+            let benchHtml = '';
+            const hasBench = homeBench.length || awayBench.length;
+            const viewBoxMinY = hasBench ? Math.min(0, benchY - 5) : 0;
+            const totalViewBoxH = hasBench ? Math.max(REPLAY_PITCH.viewBoxH, benchY + 8) - viewBoxMinY : REPLAY_PITCH.viewBoxH;
+
+            function renderBenchPlayers(bench, subs, side) {
+                if (!bench.length) return '';
+                const xStart = (side === 'home' ? 20 : 225.47 - 20 - benchSpread) + benchXPan;
+                const fill = side === 'home' ? 'rgba(74,143,231,0.5)' : 'rgba(231,76,60,0.5)';
+                const stroke = side === 'home' ? '#4a8fe7' : '#e74c3c';
+                let html = '';
+                bench.forEach((bp, i) => {
+                    const x = xStart + i * (benchSpread / Math.max(bench.length, 1)) + benchSpread / (bench.length + 1);
+                    const playerName = bp.player || bp.name || '';
+                    const num = bp.number || '';
+                    const cameOn = subs.some(s => s.on === playerName);
+                    const strokeColor = cameOn ? '#2ecc71' : stroke;
+                    html += '<g class="fp-player" data-player-name="' + esc(playerName) + '" data-player-pos="Bench" onclick="window.__navHandler(\'player\',\'' + esc(playerName) + '\',\'' + esc(side === 'home' ? m.homeTeam : m.awayTeam) + '\',\'' + nav.context + '\')" style="cursor:pointer;">' +
+                        '<circle cx="' + x.toFixed(2) + '" cy="' + benchY.toFixed(2) + '" r="3.6" fill="' + fill + '" stroke="' + strokeColor + '" stroke-width="0.5" opacity="0.7"/>' +
+                        '<text x="' + x.toFixed(2) + '" y="' + benchY.toFixed(2) + '" text-anchor="middle" dominant-baseline="central" fill="#fff" font-size="2.8" font-weight="700" font-family="Courier New">' + esc(num) + '</text>' +
+                        '</g>';
+                });
+                return html;
+            }
+
+            benchHtml += renderBenchPlayers(homeBench, homeSubs, 'home');
+            benchHtml += renderBenchPlayers(awayBench, awaySubs, 'away');
+
+            // Separator line when bench exists
+            const separatorHtml = hasBench ? '<line x1="0" y1="' + REPLAY_PITCH.viewBoxH.toFixed(2) + '" x2="225.47" y2="' + REPLAY_PITCH.viewBoxH.toFixed(2) + '" stroke="rgba(255,255,255,0.1)" stroke-width="0.3" stroke-dasharray="1,1"/>' : '';
+
+            return '<div class="hist-lineup-pitch">' +
+                '<svg class="hist-lineup-pitch-svg" viewBox="0 ' + viewBoxMinY.toFixed(2) + ' 225.47 ' + totalViewBoxH.toFixed(2) + '" preserveAspectRatio="xMidYMid meet" style="width:100%;max-width:500px;display:block;margin:0 auto;">' +
+                '<g transform="translate(7.2464987,-111.982)">' +
+                    '<path fill="#3a6e4d" stroke="rgba(255,255,255,0.5)" stroke-width="0.15" d="' + PITCH_PATH_GLOBAL + '"/>' +
+                '</g>' +
+                awayIcons +
+                homeIcons +
+                separatorHtml +
+                benchHtml +
+            '</svg>' +
+            '</div>';
+        }
+
+        function buildMatchBody(m, nav) {
+            // --- Weather (inline) ---
+            const w = m.weather;
+            let weatherIcon = '⛅';
+            if (w && w.precipitationMm > 0) weatherIcon = '🌧️';
+            if (w && w.tempC > 30) weatherIcon = '☀️';
+            const weatherInline = w ? ` <span class="hist-weather-inline"><span class="wicon">${weatherIcon}</span> ${w.tempC}°C | 💧${w.humidityPct}% | 💨${w.windKmh}km/h</span>` : '';
+
+            // --- Statistics chart (only if m.statistics exists) ---
+            const stats = m.statistics;
+            let statsChartHtml = '';
+            if (stats && stats.home && stats.away) {
+                // Define all statistics to display: { key, label, isPct }
+                const statKeys = [
+                    { key: 'possessionPct', label: 'Possession', isPct: true },
+                    { key: 'expectedGoals', label: 'xG', isPct: false },
+                    { key: 'shotsTotal', label: 'Shots', isPct: false },
+                    { key: 'shotsOnGoal', label: 'On Target', isPct: false },
+                    { key: 'shotsOffGoal', label: 'Off Target', isPct: false },
+                    { key: 'shotsBlocked', label: 'Blocked', isPct: false },
+                    { key: 'shotsInsideBox', label: 'Inside Box', isPct: false },
+                    { key: 'shotsOutsideBox', label: 'Outside Box', isPct: false },
+                    { key: 'corners', label: 'Corners', isPct: false },
+                    { key: 'offsides', label: 'Offsides', isPct: false },
+                    { key: 'fouls', label: 'Fouls', isPct: false },
+                    { key: 'yellowCards', label: 'Yellow Cards', isPct: false },
+                    { key: 'redCards', label: 'Red Cards', isPct: false },
+                    { key: 'goalkeeperSaves', label: 'GK Saves', isPct: false },
+                    { key: 'passesTotal', label: 'Passes', isPct: false },
+                    { key: 'passesAccurate', label: 'Accurate Passes', isPct: false },
+                    { key: 'passesPct', label: 'Pass Acc%', isPct: true }
+                ];
+                
+                const rows = statKeys.map(s => {
+                    const hv = stats.home[s.key];
+                    const av = stats.away[s.key];
+                    if (hv == null && av == null) return '';
+                    
+                    const total = s.isPct ? 100 : ((hv || 0) + (av || 0));
+                    const hPct = total > 0 ? ((hv || 0) / total * 100) : 0;
+                    const aPct = total > 0 ? ((av || 0) / total * 100) : 0;
+                    const hDisplay = s.isPct ? (hv != null ? hv + '%' : '-') : (hv != null ? hv : '-');
+                    const aDisplay = s.isPct ? (av != null ? av + '%' : '-') : (av != null ? av : '-');
+                    
+                    return `<div class="hist-stats-row">
+                        <span class="hist-stats-val-home">${hDisplay}</span>
+                        <div class="hist-stats-bar-wrap" style="position:relative;">
+                            <div class="hist-stats-bar-home" style="width:${Math.max(hPct, 10)}%;"></div>
+                            <div class="hist-stats-bar-away" style="width:${Math.max(aPct, 10)}%;"></div>
+                            <span style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:0.58rem;color:#fff;font-weight:600;text-shadow:0 1px 2px rgba(0,0,0,0.8);white-space:nowrap;pointer-events:none;">${s.label}</span>
+                        </div>
+                        <span class="hist-stats-val-away">${aDisplay}</span>
+                    </div>`;
+                }).join('');
+                
+                statsChartHtml = `<div class="hist-stats-chart">${rows}</div>`;
+            }
+
+            // --- Event timeline (split into home/away columns) ---
+            const homeEvents = [];
+            const awayEvents = [];
+            (m.goals || []).forEach(g => {
+                const ev = { minute: g.minute, type: 'goal', icon: ICON_GOAL,
+                    text: `<span class="actor" onclick="window.__navHandler('player','${esc(g.scorer)}','${esc(m.homeTeam)}','${nav.context}')">${g.scorer || 'Unknown'}</span>` };
+                if (g.team === 'home') homeEvents.push(ev); else awayEvents.push(ev);
+            });
+            (m.cards || []).forEach(c => {
+                const ev = { minute: c.minute, type: c.color === 'yellow' ? 'card-y' : 'card-r',
+                    icon: c.color === 'yellow' ? ICON_CARD_Y : ICON_CARD_R,
+                    text: `<span class="actor" onclick="window.__navHandler('player','${esc(c.player)}','${esc(m.homeTeam)}','${nav.context}')">${c.player || 'Unknown'}</span>` };
+                const homeLineup = (m.lineups && m.lineups.home) || [];
+                const awayLineup = (m.lineups && m.lineups.away) || [];
+                const isInHome = homeLineup.some(p => p.player === c.player);
+                const isInAway = awayLineup.some(p => p.player === c.player);
+                if (isInHome) homeEvents.push(ev);
+                else if (isInAway) awayEvents.push(ev);
+                else homeEvents.push(ev);
+            });
+            (m.substitutions || []).forEach(s => {
+                // Green ↑ for player coming on, red ↓ for player going off
+                const subIcon = `<span style="font-size:0.7rem;"><span style="color:#2ecc71;">↑</span><span style="color:#e74c3c;">↓</span></span>`;
+                const ev = { minute: s.minute, type: 'sub', icon: subIcon,
+                    text: `<span class="actor" style="color:#2ecc71;" onclick="window.__navHandler('player','${esc(s.on)}','${esc(m.homeTeam)}','${nav.context}')">${s.on || '?'}</span> <span class="actor" style="color:#e74c3c;" onclick="window.__navHandler('player','${esc(s.off)}','${esc(m.homeTeam)}','${nav.context}')">${s.off || '?'}</span>` };
+                if (s.team === 'home') homeEvents.push(ev);
+                else if (s.team === 'away') awayEvents.push(ev);
+                else homeEvents.push(ev);
+            });
+            homeEvents.sort((a, b) => a.minute - b.minute);
+            awayEvents.sort((a, b) => a.minute - b.minute);
+
+            const renderEventCol = (events, side) => {
+                if (!events.length) return '<div style="font-size:0.75rem;color:#555;padding:4px;">—</div>';
+                return events.map(e => {
+                    if (side === 'away') {
+                        return `<div class="hist-event ${e.type}" style="display:flex;align-items:center;gap:6px;justify-content:flex-end;">${e.text}<span class="min">${e.minute}'</span><span class="hist-event-icon">${e.icon}</span></div>`;
+                    }
+                    return `<div class="hist-event ${e.type}" style="display:flex;align-items:center;gap:6px;"><span class="hist-event-icon">${e.icon}</span><span class="min">${e.minute}'</span>${e.text}</div>`;
+                }).join('');
+            };
+
+            const timelineHtml = (homeEvents.length || awayEvents.length)
+                ? `<div class="hist-timeline-split">
+                    <div class="hist-timeline-col home">${renderEventCol(homeEvents, 'home')}</div>
+                    <div class="hist-timeline-col away">${renderEventCol(awayEvents, 'away')}</div>
+                   </div>`
+                : '<p>No major events recorded.</p>';
+
+            // --- Lineups ---
+            const createLineup = (team, lineupData) => {
+                const arr = Array.isArray(lineupData) ? lineupData : [];
+                return `
+                    <div class="hist-col">
+                        <div class="hist-col-title" onclick="window.__navHandler('team','${esc(team)}','','${nav.context}')">${flagImg(team)} ${team || 'N/A'}</div>
+                        ${arr.filter(p => p.starter).sort((a, b) => {
+                            const posOrder = ['GK', 'DF', 'MF', 'FW'];
+                            return posOrder.indexOf(a.position) - posOrder.indexOf(b.position);
+                        }).map(p => `
+                            <div class="hist-row" onclick="window.__navHandler('player','${esc(p.player)}','${esc(team)}','${nav.context}')">
+                                <span class="num">${p.number || ''}</span>
+                                <span class="pos">${p.position || ''}</span>
+                                <span class="pname">${p.player || ''}</span>
+                                ${p.captain ? '<span class="cap">(C)</span>' : ''}
+                            </div>
+                        `).join('')}
+                    </div>`;
+            };
+
+            // --- Ref & Stadium (clickable) ---
+            const refHtml = m.referee && m.referee.name
+                ? ` | Ref: <span style="color:#FFD700; cursor:pointer; text-decoration:underline;" onclick="window.__navHandler('ref','${esc(m.referee.name)}','','${nav.context}')">${m.referee.name}</span>`
+                : '';
+            const stadiumHtml = m.stadium
+                ? `<span style="color:#FFD700; cursor:pointer; text-decoration:underline;" onclick="window.__navHandler('stadium','${esc(m.stadium)}','','${nav.context}')">${m.stadium}</span>`
+                : '';
+
+            const formations = m.formations ? ` (${m.formations.home} / ${m.formations.away})` : '';
+
+            return `
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:6px;">
+                    <div class="hist-team-side" onclick="window.__navHandler('team','${esc(m.homeTeam)}','','${nav.context}')">
+                        ${flagImg(m.homeTeam, 'lg')}
+                        <div class="hist-team-name">${m.homeTeam || ''}</div>
+                    </div>
+                    <div class="hist-score-box">${m.homeScore} - ${m.awayScore}</div>
+                    <div class="hist-team-side" onclick="window.__navHandler('team','${esc(m.awayTeam)}','','${nav.context}')">
+                        ${flagImg(m.awayTeam, 'lg')}
+                        <div class="hist-team-name">${m.awayTeam || ''}</div>
+                    </div>
+                </div>
+                <p style="text-align:center; font-size:0.78rem;">${m.date || ''} | ${stadiumHtml}${refHtml}${weatherInline}</p>
+                ${statsChartHtml}
+                <h3>Match Timeline</h3>
+                ${timelineHtml}
+                <h3>Formations${formations}</h3>
+                ${renderFormationPitch(m, nav)}
+            `;
+            // NOTE: Tooltip listeners are attached globally via attachFormationPitchTooltips()
+            // at startup (see end of script). No per-render attachment needed because we use
+            // event delegation on `document` with a single global #hist-lineup-pitch-tooltip element.
+        }
+
+        // ==========================================
+        // UNIFIED NAV HANDLER (Phase 2.3)
+        // ==========================================
+        // Routes all clicks from match views (player, team, ref, stadium) to the
+        // correct view based on context (popup, bracket, standings, profile).
+        // 'profile' context = clicked from inside the search-result profile card —
+        //   renders into #profile-body so navigation stays in the profile card.
+        // 'leaderboard' context = clicked from inside the All-Time Stats card —
+        //   renders into #leaderboard-body.
+        // ==========================================
+        // UNIFIED NAV HANDLER (v160)
+        // ==========================================
+        // Routes clicks from match views (player/team/ref/stadium clicks inside a
+        // rendered match) to the correct view based on context:
+        //   'popup'       → render into the open Leaflet popup (currentMarkerRef)
+        //   'bracket'     → render into the bracket popup
+        //   'standings'   → render into #standings-body
+        //   'leaderboard' → render into #leaderboard-body
+        //   'profile'     → render into #profile-body
+        //
+        // STACK DISCIPLINE (v160):
+        // Before navigating forward, this handler pushes the rebuild expression for
+        // the match being left (stored in `lbCurrentMatchRebuild` for leaderboard/
+        // profile context, or pushed directly by the show* functions for popup/
+        // bracket/standings context) onto the unified nav stack. This applies to
+        // ALL contexts so the "← Back" button can always return to the match.
+        window.__navHandler = function(action, name, fromTeam, context) {
+            // v160: For leaderboard/profile context, push the match rebuild expression.
+            // (Popup/bracket/standings contexts handle their own push inside the show* functions.)
+            if (!window.__navRestoring && (context === 'leaderboard' || context === 'profile') && lbCurrentMatchRebuild) {
+                lbNavPush(lbCurrentMatchRebuild);
+                lbCurrentMatchRebuild = null;
+            }
+            if (action === 'player') {
+                if (context === 'bracket') {
+                    window.__bracketPopupNav('player', name, fromTeam);
+                } else if (context === 'standings') {
+                    // v160: Use standingsShowPlayer so the player renders in #standings-body
+                    window.standingsShowPlayer(name, fromTeam || '');
+                } else if (context === 'leaderboard' || context === 'profile') {
+                    window.__lbClickPlayer(name, []);
+                } else {
+                    // Popup context — showPlayerDetails pushes the match onto the stack
+                    showPlayerDetails(name, window.currentMarkerRef);
+                }
+            } else if (action === 'team') {
+                if (context === 'bracket') {
+                    window.__bracketPopupNav('team', name, '');
+                } else if (context === 'standings') {
+                    // v160: Use standingsShowTeam so the team renders in #standings-body
+                    window.standingsShowTeam(name);
+                } else if (context === 'leaderboard' || context === 'profile') {
+                    window.__lbClickTeam(name);
+                } else {
+                    // Popup context — showTeamDetails pushes the match/stadium onto the stack
+                    showTeamDetails(name, window.currentMarkerRef);
+                }
+            } else if (action === 'ref') {
+                if (context === 'profile' || context === 'leaderboard') {
+                    window.__lbClickRef(name);
+                } else {
+                    // __showRefProfile pushes the match onto the stack
+                    window.__showRefProfile(name, context);
+                }
+            } else if (action === 'stadium') {
+                if (context === 'profile' || context === 'leaderboard') {
+                    window.__lbClickStadium(name);
+                } else {
+                    // __showStadiumProfile pushes the match onto the stack
+                    window.__showStadiumProfile(name, context);
+                }
+            }
+        };
+
+        function showMatchDetails(matchId, marker) {
+            window.currentMarkerRef = marker;
+            const { match: m, stadiumId } = findMatchById(matchId);
+            if (!m) { console.warn('Match not found:', matchId); return; }
+
+            // v160: Push the view we're leaving onto the stack (forward nav only).
+            // - If we're leaving another match (currentMatchContext set and different),
+            //   push that match so Back returns to it.
+            // - Otherwise, if currentStadiumContext is set, we're leaving a stadium view —
+            //   push stadium so Back returns to it (restores the "← Stadium" button behavior).
+            if (!window.__navRestoring) {
+                if (currentMatchContext && currentMatchContext !== matchId) {
+                    pushNavState('match', histLookups.currentYear, 'popup', { matchId: currentMatchContext }, 'Match');
+                } else if (currentStadiumContext && !currentMatchContext) {
+                    pushNavState('stadium', histLookups.currentYear, 'popup', { stadiumName: currentStadiumContext }, 'Stadium');
+                }
+            }
+
+            currentMatchContext = matchId;
+            if (stadiumId) currentStadiumContext = stadiumId;
+
+            // Use unified match body builder
+            const matchBody = buildMatchBody(m, { context: 'popup', marker, matchId });
+            // v160: Back button uses the unified nav stack. navBackBtn() picks the right
+            // label from the top of the stack (e.g. "Stadium" if we came from a stadium,
+            // "Match" if we came from another match). Falls back to "Stadium" when stack
+            // is empty (preserving v157's "← Stadium" button behavior at the root).
+            const backBtn = navBackBtn('Stadium');
+            const body = matchBody + backBtn;
+
+            updatePopupContent(marker, popupShell(`⚽ ${m.homeTeam} vs ${m.awayTeam}`, body));
+        }
+
+        // --- Shared player profile builder ---
+        // Used by both showPlayerDetails (popup) and standingsShowPlayerDetails (overlay).
+        // Returns an HTML string for the full player profile body (excluding the back button
+        // and title, which are handled by the caller).
+        function buildPlayerProfile(p, playerName, teamName, backBtnHtml) {
+            const id = p.identity || {};
+            const photoHtml = getPlayerPhotoHtml(p.name || playerName, teamName, 'full');
+
+            // --- Stats: 8 per side to match doubled photo height ---
+            const leftStats = [
+                { val: p.position || 'N/A', lbl: 'Position' },
+                { val: p.jersey || '#', lbl: 'Jersey' },
+                { val: p.ageAtTournament != null ? p.ageAtTournament : 'N/A', lbl: 'Age at WC' },
+                { val: p.goals || 0, lbl: 'WC Goals' },
+                { val: id.heightCm ? id.heightCm + 'cm' : 'N/A', lbl: 'Height' },
+                { val: p.weightKg ? p.weightKg + 'kg' : 'N/A', lbl: 'Weight' },
+                { val: p.caps != null ? p.caps : 'N/A', lbl: 'Caps' },
+                { val: p.nationalGoals != null ? p.nationalGoals : 'N/A', lbl: 'Nat. Goals' },
+            ];
+            const rightStats = [
+                { val: id.dominantFoot || p.dominantFoot || 'N/A', lbl: 'Foot' },
+                { val: id.zodiac || 'N/A', lbl: 'Zodiac' },
+                { val: p.born || id.born || 'N/A', lbl: 'Born' },
+                { val: id.nationality || (id.nationalities && id.nationalities[0]) || 'N/A', lbl: 'Nationality' },
+                { val: p.club ? (p.club.name || 'N/A') : 'N/A', lbl: 'Club' },
+                { val: p.club ? (p.club.country || '') : '', lbl: 'Club Country' },
+                { val: p.captain ? 'Yes' : 'No', lbl: 'Captain' },
+                { val: p.totalGoals != null ? p.totalGoals : (id.careerGoals || 'N/A'), lbl: 'Career Goals' },
+            ];
+            const renderStatCol = (stats) => stats.map(s => 
+                `<div class="hist-stat-box"><span class="hist-stat-val">${s.val}</span><span class="hist-stat-lbl">${s.lbl}</span></div>`
+            ).join('');
+            const leftStatsHtml = `<div class="hist-stat-grid" style="grid-template-columns:1fr 1fr; gap:3px;">${renderStatCol(leftStats)}</div>`;
+            const rightStatsHtml = `<div class="hist-stat-grid" style="grid-template-columns:1fr 1fr; gap:3px;">${renderStatCol(rightStats)}</div>`;
+
+            // Player header: left stats | photo | right stats
+            const playerHeaderHtml = `<div class="hist-player-header">${leftStatsHtml}${photoHtml || '<div class="hist-player-photo" style="display:flex;align-items:center;justify-content:center;font-size:2rem;">👤</div>'}${rightStatsHtml}</div>`;
+
+            // --- Career Clubs ---
+            const clubsHtml = id.clubs && id.clubs.length
+                ? id.clubs.map(c => `<span class="hist-badge bg-gold">${c}</span>`).join(' ')
+                : '<span style="color:#555;">N/A</span>';
+
+            // --- WC Appearances as 3-column boxes ---
+            const appearancesHtml = (p.appearances && p.appearances.length) ? `
+                <h3>World Cup Appearances</h3>
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:14px;">
+                    ${p.appearances.map(a => {
+                        const isCurrent = a.year === histLookups.currentYear;
+                        return `<div class="hist-app-item ${isCurrent ? 'current' : ''}" onclick="window.__switchToYear(${a.year})" style="cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 4px;" title="View ${a.year} World Cup">
+                            <span class="yr" style="font-size:0.9rem;font-weight:700;color:#FFD700;">${a.year}</span>
+                            <span class="gl" style="font-size:0.7rem;color:#CAEEC2;">${a.goals || 0}G</span>
+                            <span class="js" style="font-size:0.65rem;color:#888;">#${a.jersey || ''}</span>
+                        </div>`;
+                    }).join('')}
+                </div>` : '';
+
+            // --- 3-column info grid: Personal Info | Club at Tournament | Career Clubs ---
+            const infoGridHtml = `
+                <div class="hist-info-grid" style="grid-template-columns:1fr 1fr 1fr;">
+                    <div class="hist-info-col">
+                        <h4>Personal Info</h4>
+                        <p><strong>Born:</strong> ${p.born || id.born || 'N/A'}</p>
+                        <p><strong>Birthplace:</strong> ${id.placeOfBirth ? `${id.placeOfBirth.city || ''}, ${id.placeOfBirth.country || ''}` : 'N/A'}</p>
+                        <p><strong>Zodiac:</strong> ${id.zodiac || 'N/A'}</p>
+                        <p><strong>Nationality:</strong> ${id.nationalities && id.nationalities.length ? id.nationalities.join(', ') : (id.nationality || 'N/A')}</p>
+                        ${p.captain ? '<p><span class="hist-badge bg-gold">Captain</span></p>' : ''}
+                    </div>
+                    <div class="hist-info-col">
+                        <h4>Club at Tournament</h4>
+                        <p>${p.club ? p.club.name || 'N/A' : 'N/A'}</p>
+                        ${p.club && p.club.country ? `<p><span class="hist-badge bg-blue">${p.club.country}</span></p>` : ''}
+                    </div>
+                    <div class="hist-info-col">
+                        <h4>Career Clubs</h4>
+                        <div style="display:flex; flex-wrap:wrap; gap:4px;">${clubsHtml}</div>
+                    </div>
+                </div>`;
+
+            return `
+                ${backBtnHtml}
+                ${playerHeaderHtml}
+                ${appearancesHtml}
+                ${infoGridHtml}
+            `;
+        }
+
+        // --- Shared team profile builder ---
+        // Used by both showTeamDetails (popup) and standingsShowTeamDetails (overlay).
+        // playerClickHandler: onclick string for opening a player from squad/captain (differs popup vs overlay)
+        // navContext (v160, optional): 'bracket' to keep match clicks inside the bracket popup.
+        //   When omitted, match cards use window.__teamShowMatch (which routes to standings or popup).
+        function buildTeamProfile(t, teamName, backBtnHtml, playerClickHandler, navContext) {
+            const finalPos = t.finalPosition;
+            const posSuffix = finalPos === 1 ? 'st' : finalPos === 2 ? 'nd' : finalPos === 3 ? 'rd' : 'th';
+            const gs = t.groupStage || {};
+            const gd = (gs.gf != null && gs.ga != null) ? (gs.gf - gs.ga) : null;
+            const gdStr = gd != null ? (gd > 0 ? '+' : '') + gd : 'N/A';
+
+            // --- Coach card (LEFT) — bigger photo, no "Coach" label needed ---
+            const coach = t.coach || {};
+            const coachPhoto = getCoachPhotoHtml(coach.name, teamName);
+            const coachCardHtml = `
+                <div class="hist-spotlight-card">
+                    ${coachPhoto ? coachPhoto.replace('hist-coach-photo', 'hist-coach-photo-lg') : '<div class="hist-coach-photo-lg" style="display:flex; align-items:center; justify-content:center; font-size:1.6rem;">📋</div>'}
+                    <div class="hist-spotlight-info">
+                        <div class="hist-spotlight-role">Coach</div>
+                        <div class="hist-spotlight-name" style="font-size:0.88rem;">${coach.name || 'N/A'}</div>
+                        <div class="hist-spotlight-meta">${coach.country || ''}${coach.born ? ' • b.' + new Date(coach.born).getFullYear() : ''}</div>
+                    </div>
+                </div>`;
+
+            // --- Captain card (RIGHT, clickable) — smaller photo ---
+            const captainName = t.captain || '';
+            let captainCardHtml;
+            if (captainName) {
+                let captainPhotoHtml = getPlayerPhotoHtml(captainName, teamName, 'thumb');
+                if (captainPhotoHtml) {
+                    captainPhotoHtml = captainPhotoHtml.replace('hist-squad-thumb', 'hist-captain-photo-sm');
+                } else {
+                    captainPhotoHtml = '<div class="hist-captain-photo-sm" style="display:flex; align-items:center; justify-content:center; font-size:1.2rem;">🇨</div>';
+                }
+                captainCardHtml = `
+                <div class="hist-spotlight-card clickable" onclick="${playerClickHandler.replace('{NAME}', esc(captainName))}">
+                    ${captainPhotoHtml}
+                    <div class="hist-spotlight-info">
+                        <div class="hist-spotlight-role">Captain</div>
+                        <div class="hist-spotlight-name" style="font-size:0.78rem;">${captainName}</div>
+                        <div class="hist-spotlight-meta">Click to view</div>
+                    </div>
+                </div>`;
+            } else {
+                captainCardHtml = '<div class="hist-spotlight-card"><div class="hist-spotlight-info"><div class="hist-spotlight-role">Captain</div><div class="hist-spotlight-name">N/A</div></div></div>';
+            }
+
+            // --- Team stats table (MIDDLE) — single nation's stats, like standings table ---
+            const statsTableHtml = `
+                <div class="hist-team-stats-table">
+                    <div class="tst-title">${finalPos != null ? finalPos + posSuffix + ' Place' : 'Team'} • ${t.confederation || ''} • ${gs.group ? 'Group ' + gs.group : ''}</div>
+                    <table>
+                        <thead><tr><th></th><th>P</th><th>W</th><th>D</th><th>L</th><th>GF</th><th>GA</th><th>GD</th><th>Pts</th></tr></thead>
+                        <tbody>
+                            <tr>
+                                <td>${t.code || t.name || teamName}</td>
+                                <td>${gs.played != null ? gs.played : '-'}</td>
+                                <td>${gs.won != null ? gs.won : '-'}</td>
+                                <td>${gs.drawn != null ? gs.drawn : '-'}</td>
+                                <td>${gs.lost != null ? gs.lost : '-'}</td>
+                                <td>${gs.gf != null ? gs.gf : '-'}</td>
+                                <td>${gs.ga != null ? gs.ga : '-'}</td>
+                                <td>${gdStr}</td>
+                                <td class="pts">${gs.pts != null ? gs.pts : '-'}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>`;
+
+            // Spotlight row: Coach (left) | Stats table (middle) | Captain (right)
+            const spotlightHtml = `<div class="hist-team-spotlight">${coachCardHtml}${statsTableHtml}${captainCardHtml}</div>`;
+
+            // --- Knockout Path (redesigned horizontal connected timeline) ---
+            const koPath = t.knockoutPath || [];
+            let koPathHtml = '';
+            if (koPath.length > 0) {
+                const stepsHtml = koPath.map((k, idx) => {
+                    const match = findMatchByTeams(teamName, k.opponent);
+                    const matchId = match ? (match.id || `${match.homeTeam}-${match.awayTeam}-${match.date}`) : '';
+                    const matchClick = matchId ? `onclick="window.__teamShowMatch('${esc(matchId)}')"` : '';
+                    const connector = idx < koPath.length - 1 ? '<div class="ko-connector"></div>' : '';
+                    // Better stage labels
+                    const stageMap = { 'r16': 'Round of 16', 'qf': 'Quarter-Final', 'sf': 'Semi-Final', 'final': 'Final', '3rd': '3rd Place' };
+                    const stageLabel = stageMap[k.stage] || (k.stage || '').replace(/_/g, ' ');
+                    // Match date
+                    const dateStr = match && match.date ? new Date(match.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+                    return `
+                    <div class="ko-step" ${matchClick}>
+                        <span class="ko-stage">${stageLabel}</span>
+                        ${dateStr ? `<span class="ko-date">${dateStr}</span>` : ''}
+                        <span class="ko-result ${k.won ? 'win' : 'loss'}">${k.result || ''}</span>
+                        <span class="ko-opp">${flagImg(k.opponent)} ${k.opponent || ''}</span>
+                    </div>
+                    ${connector}`;
+                }).join('');
+                koPathHtml = `
+                    <div class="hist-ko-section">
+                        <h3>Knockout Path</h3>
+                        <div class="hist-ko-timeline-new">${stepsHtml}</div>
+                    </div>`;
+            }
+
+            // --- Match cards GRID (3+ columns) ---
+            const teamMatches = findMatchesByTeam(teamName);
+            let matchCardsHtml = '';
+            if (teamMatches.length > 0) {
+                const stageMap = { 'r16': 'R16', 'qf': 'QF', 'sf': 'SF', 'final': 'Final', '3rd': '3rd', 'group': 'Group', 'round_of_16': 'R16', 'quarter_final': 'QF', 'semi_final': 'SF', 'third_place': '3rd' };
+                const cards = teamMatches.map(m => {
+                    const matchId = m.id || `${m.homeTeam}-${m.awayTeam}-${m.date}`;
+                    const dateStr = m.date ? new Date(m.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+                    const homeScore = m.homeScore != null ? m.homeScore : '-';
+                    const awayScore = m.awayScore != null ? m.awayScore : '-';
+                    const stageLabel = stageMap[m.stage] || stageMap[m.stageRaw] || (m.stage || '').replace(/_/g, ' ');
+                    return `
+                    <div class="hist-match-card" onclick="window.__teamShowMatch('${esc(matchId)}')">
+                        <span class="mc-date">${dateStr}</span>
+                        <div class="mc-teams">
+                            <span class="mc-team">${flagImg(m.homeTeam)} ${m.homeTeam || ''}</span>
+                            <span class="mc-score">${homeScore}-${awayScore}</span>
+                            <span class="mc-team">${flagImg(m.awayTeam)} ${m.awayTeam || ''}</span>
+                        </div>
+                        <span class="mc-stage">${stageLabel}</span>
+                    </div>`;
+                }).join('');
+                matchCardsHtml = `
+                    <h3>Matches</h3>
+                    <div class="hist-match-grid">${cards}</div>`;
+            }
+
+            // --- Squad Roster ---
+            const squadArr = Array.isArray(t.squad) ? t.squad : [];
+            const squadHtml = squadArr.slice().sort((a, b) => (a.jersey || 0) - (b.jersey || 0)).map(p => {
+                const pName = p.name || p.player || '';
+                return `
+                <div class="hist-item" onclick="${playerClickHandler.replace('{NAME}', esc(pName))}">
+                    <div class="hist-item-main">
+                        ${getPlayerPhotoHtml(pName, teamName, 'thumb')}
+                        <span class="hist-badge bg-blue" style="min-width:24px; text-align:center;">${p.jersey || ''}</span>
+                        <span style="font-size:0.75rem; color:#4a8fe7;">${p.position || ''}</span>
+                        <span>${pName}${p.captain ? ' <span class="hist-captain-badge">🇨</span>' : ''}</span>
+                    </div>
+                    <div class="hist-item-side">
+                        <span style="font-size:0.72rem; color:#a0a6b8;">${p.club ? p.club.name || '' : ''}</span>
+                        ${(p.goals || 0) > 0 ? `<span class="hist-badge bg-gold">${p.goals} ⚽</span>` : ''}
+                    </div>
+                </div>`;
+            }).join('');
+
+            return `
+                ${backBtnHtml}
+                ${spotlightHtml}
+                ${koPathHtml}
+                ${matchCardsHtml}
+                <h3>Squad Roster</h3>
+                <div class="hist-list">${squadHtml || '<p>No squad data.</p>'}</div>
+            `;
+        }
+
+        function showPlayerDetails(playerName, marker) {
+            window.currentMarkerRef = marker;
+            const p = histLookups.players[playerName];
+
+            // v160: Push the view we're leaving (the match) onto the stack so Back
+            // returns to it. Skip when restoring (window.__navRestoring=true).
+            if (!window.__navRestoring && currentMatchContext) {
+                pushNavState('match', histLookups.currentYear, 'popup', { matchId: currentMatchContext }, 'Match');
+            }
+
+            // Back button uses the unified nav stack — label comes from the top entry
+            const backBtnHtml = navBackBtn('Match');
+
+            if (!p) {
+                const body = `${backBtnHtml}<p>Detailed bio not available for this player.</p>`;
+                updatePopupContent(marker, popupShell(`👤 ${playerName}`, body));
+                return;
+            }
+
+            const teamName = p.current_team_context || (Object.keys(histLookups.teams).find(t => histLookups.teams[t].squad && histLookups.teams[t].squad.some(pl => (pl.name || pl.player) === playerName)));
+            const teamData = teamName ? lookupTeam(teamName) : null;
+            const teamIso = teamData ? teamData.iso : null;
+
+            const body = buildPlayerProfile(p, playerName, teamName, backBtnHtml);
+
+            const titleFlag = teamIso ? `<img src="https://flagcdn.com/w40/${teamIso.toLowerCase()}.png" class="hist-flag" onerror="this.style.visibility='hidden'"> ` : '';
+            updatePopupContent(marker, popupShell(`${titleFlag}👤 ${p.name || playerName}`, body));
+        }
+
+        function showTeamDetails(teamName, marker) {
+            window.currentMarkerRef = marker;
+            const t = lookupTeam(teamName); // alias-aware lookup
+
+            // v160: Push the view we're leaving (match or stadium) onto the stack.
+            if (!window.__navRestoring) {
+                if (currentMatchContext) {
+                    pushNavState('match', histLookups.currentYear, 'popup', { matchId: currentMatchContext }, 'Match');
+                } else if (currentStadiumContext) {
+                    pushNavState('stadium', histLookups.currentYear, 'popup', { stadiumName: currentStadiumContext }, 'Stadium');
+                }
+            }
+
+            const backBtnHtml = navBackBtn('Stadium');
+
+            if (!t) {
+                const body = `${backBtnHtml}<p>No detailed team info available.</p>`;
+                updatePopupContent(marker, popupShell(teamName || 'Team', body));
+                return;
+            }
+
+            // Player click handler for popup context — opens player in the same popup
+            // v160: Use __navHandler so the match gets pushed onto the stack before
+            // navigating to the player.
+            const playerClickHandler = `window.__navHandler('player','{NAME}','${esc(teamName)}','popup')`;
+
+            const body = buildTeamProfile(t, teamName, backBtnHtml, playerClickHandler);
+            const titleFlag = t.iso ? `<img src="https://flagcdn.com/w40/${t.iso.toLowerCase()}.png" class="hist-flag" onerror="this.style.visibility='hidden'"> ` : '';
+            updatePopupContent(marker, popupShell(`${titleFlag}${t.name || teamName}`, body));
+        }
+
+       // ==========================================
+// 10. INITIALIZATION (FIXED)
+// ==========================================
+
+async function initTimeline() {
+    console.log("🚀 Starting initialization...");
+    
+    if (!initVenues()) { 
+        console.error('❌ Venues data missing.'); 
+        return; 
+    }
+    
+    const matches = await fetchMatches();
+    renderTimeline(matches);
+    renderBrackets();
+    
+    // ❌ REMOVE THIS LINE - causes race condition
+    // addStadiumMarkers(); 
+    
+    // ✅ Historical markers will be added by loadHistoricalData()
+    // when you call it separately
+    
+    setTimeout(scrollToCurrentTime, 100);
+    
+    setInterval(async () => {
+        await fetchMatches();
+        renderTimeline(matchesCache);
+        renderBrackets();
+        scrollToCurrentTime();
+    }, 60000);
+    
+    console.log("✅ Timeline initialized.");
+}
+
+// Event Listeners
+centerMarker.addEventListener('click', () => {
+    fetchMatches().then(() => { 
+        renderTimeline(matchesCache); 
+        renderBrackets(); 
+        scrollToCurrentTime(); 
+    });
+});
+
+timelineWrapper.addEventListener('wheel', (evt) => { 
+    evt.preventDefault(); 
+    timelineWrapper.scrollLeft += evt.deltaY; 
+});
+
+map.on('zoomend', () => filterAndDraw());
+map.on('moveend', draw);
+
+// --- STANDINGS OVERLAY EVENT LISTENERS ---
+// Wire up global handlers used by inline onclick attributes in the overlay
+window.standingsShowTeam = function(teamName) { standingsShowTeamDetails(teamName); };
+window.standingsShowPlayer = function(playerName, fromTeam) { standingsShowPlayerDetails(playerName, fromTeam); };
+window.standingsBackToGroups = function() {
+    const body = document.getElementById('standings-body');
+    if (body && window.standingsGroupsHtml) {
+        body.innerHTML = `<div class="standings-groups">${window.standingsGroupsHtml}</div>`;
+    }
+    // v161: Reset the standings view state so the next navigation push works correctly.
+    // Without this, __standingsCurrentView stays 'team'/'player'/'match' after backing
+    // to groups, causing the next standingsShowTeamDetails to skip pushing 'groups'
+    // onto the nav stack (because the check `!== 'team'` is false) — breaking Back.
+    window.__standingsCurrentView = 'groups';
+    window.__standingsCurrentTeam = null;
+    window.__standingsCurrentPlayer = null;
+};
+
+// --- Match click handler from team view ---
+// Works in both popup and standings overlay contexts:
+// - If standings overlay is open → render match in the overlay body
+// - Otherwise (popup context) → call showMatchDetails with the current marker
+// v160: Updated to also handle bracket popup context.
+// - If bracket popup is visible → render match in the bracket popup (NOT a stale marker popup)
+// - Else if standings overlay is open → render match in the overlay body
+// - Else if popup (marker) is open → call showMatchDetails with the current marker
+window.__teamShowMatch = function(matchId) {
+    // v160: Check bracket popup FIRST — if it's visible, the match should render there,
+    // not in a stale marker popup. This fixes the bug where clicking a match in a bracket
+    // team view would open a background marker popup.
+    const bracketPopup = document.getElementById('bracket-popup');
+    if (bracketPopup && bracketPopup.classList.contains('visible')) {
+        showBracketPopup(matchId);
+        return;
+    }
+    const overlay = document.getElementById('standings-overlay');
+    if (overlay && overlay.classList.contains('visible')) {
+        // Standings overlay context — render match in the overlay
+        standingsShowMatchDetails(matchId);
+    } else if (window.currentMarkerRef) {
+        // Popup context — reuse the existing showMatchDetails
+        showMatchDetails(matchId, window.currentMarkerRef);
+    }
+};
+
+// Render match details inside the standings overlay (mirrors showMatchDetails but for overlay)
+// v160: Uses the unified navStack. Pushes the view we're leaving (team/player/groups) so
+// Back returns to it. Skip when restoring (window.__navRestoring=true).
+function standingsShowMatchDetails(matchId) {
+    const body = document.getElementById('standings-body');
+    if (!body) return;
+
+    const { match: m, stadiumId } = findMatchById(matchId);
+    if (!m) { console.warn('Match not found:', matchId); return; }
+
+    // v160: Push the view we're leaving onto the stack.
+    if (!window.__navRestoring) {
+        if (window.__standingsCurrentView === 'team' && window.__standingsCurrentTeam) {
+            pushNavState('team', histLookups.currentYear, 'standings', { teamName: window.__standingsCurrentTeam }, window.__standingsCurrentTeam);
+        } else if (window.__standingsCurrentView === 'player' && window.__standingsCurrentPlayer) {
+            pushNavState('player', histLookups.currentYear, 'standings', { playerName: window.__standingsCurrentPlayer, fromTeam: window.__standingsCurrentTeam || '' }, window.__standingsCurrentPlayer);
+        } else if (window.__standingsCurrentView !== 'match') {
+            // Coming from groups view (or no prior view)
+            pushNavState('groups', histLookups.currentYear, 'standings', {}, 'Standings');
+        }
+    }
+
+    if (stadiumId) currentStadiumContext = stadiumId;
+    currentMatchContext = matchId;
+    window.__standingsCurrentView = 'match';
+
+    // Use unified match body builder
+    const matchBody = buildMatchBody(m, { context: 'standings', matchId });
+    // Store rebuild expression so __navHandler can push it before navigating deeper
+    lbCurrentMatchRebuild = `window.__teamShowMatch('${esc(matchId)}')`;
+    // Back button uses nav stack — label comes from the top entry (team name, player name, or "Standings")
+    const backBtn = `<div class="lb-tab" onclick="window.__navBack()" style="margin-bottom:12px; cursor:pointer;">← Back</div>`;
+
+    body.innerHTML = `
+        ${backBtn}
+        <h2 style="color:#FFD700; margin:0 0 12px; font-size:1.3rem;">⚽ ${m.homeTeam} vs ${m.awayTeam}</h2>
+        ${matchBody}
+    `;
+    body.scrollTop = 0;
+}
+
+// ==========================================
+// ALL-TIME STATS LEADERBOARD (Phase 3.1)
+// ==========================================
+
+let leaderboardData = null;
+
+async function buildLeaderboardData() {
+    await ensureCrossYearIndex();
+
+    const stats = {
+        topScorers: [],      // { name, goals, years: [...] }
+        mostTitles: [],      // { name, stars }
+        mostHosted: [],      // { stadium, matches }
+        mostReffed: [],      // { name, matches }
+    };
+
+    // Top scorers — aggregate goals from players_FULL across all years
+    const playerGoals = {};
+    for (const year of getCrossYearSources()) {
+        const varName = `FWCD_${year}`;
+        if (window[varName] && window[varName].players_FULL) {
+            window[varName].players_FULL.forEach(p => {
+                if (p.goals && p.goals > 0) {
+                    if (!playerGoals[p.name]) playerGoals[p.name] = { name: p.name, goals: 0, years: [] };
+                    playerGoals[p.name].goals += p.goals;
+                    if (playerGoals[p.name].years.indexOf(year) === -1) playerGoals[p.name].years.push(year);
+                }
+            });
+        }
+    }
+    stats.topScorers = Object.values(playerGoals).sort((a, b) => b.goals - a.goals).slice(0, 20);
+
+    // Most titles — from FWCD_Participants (Star field)
+    if (typeof fifaWorldCupParticipants !== 'undefined') {
+        const titles = {};
+        fifaWorldCupParticipants.forEach(p => {
+            if (p.Success === 'Champion' && p.Star) {
+                const stars = parseInt(p.Star, 10);
+                if (!titles[p.name] || titles[p.name] < stars) {
+                    titles[p.name] = stars;
+                }
+            }
+        });
+        stats.mostTitles = Object.entries(titles).map(([name, stars]) => ({ name, stars }))
+            .sort((a, b) => b.stars - a.stars);
+    }
+
+    // Most hosted — from crossYearIndex.stadiums
+    stats.mostHosted = Object.entries(crossYearIndex.stadiums).map(([stadium, matches]) => ({
+        stadium, matches: matches.length
+    })).sort((a, b) => b.matches - a.matches).slice(0, 15);
+
+    // Most reffed — from crossYearIndex.refs
+    stats.mostReffed = Object.entries(crossYearIndex.refs).map(([name, matches]) => ({
+        name, matches: matches.length
+    })).sort((a, b) => b.matches - a.matches).slice(0, 15);
+
+    leaderboardData = stats;
+    return stats;
+}
+
+// Track the current leaderboard tab so chart click handlers can pass it as fromTab (for back button)
+let currentLeaderboardTab = null;
+
+function renderLeaderboardTab(tab) {
+    const body = document.getElementById('leaderboard-body');
+    const tabsContainer = document.getElementById('leaderboard-tabs-container');
+    if (!body || !leaderboardData) return;
+    currentLeaderboardTab = tab;
+    lbNavClear(); // Reset navigation stack when a new tab is selected
+
+    // Chart tab system — 7 charts, center aligned
+    const chartTabs = [
+        { id: 'titles', label: 'Most Titles' },
+        { id: 'scorers', label: 'Top Scorers' },
+        { id: 'cards', label: 'Most Carded' },
+        { id: 'chartX', label: 'Most Cards' },
+        { id: 'refs', label: 'Most Refed' },
+        { id: 'attendance', label: 'Most Attendance' },
+        { id: 'hosted', label: 'Most Hosted' },
+    ];
+
+    const tabsHtml = chartTabs.map(t =>
+        `<div class="chart-tab ${t.id === tab ? 'active' : ''}" onclick="renderLeaderboardTab('${t.id}')">${t.label}</div>`
+    ).join('');
+
+    let contentHtml = '';
+    if (tab === 'titles') contentHtml = renderTitlesChart(leaderboardData.mostTitles || []);
+    else if (tab === 'scorers') contentHtml = renderScorersChart(leaderboardData.topScorers || []);
+    else if (tab === 'cards') contentHtml = renderCardsChart();
+    else if (tab === 'chartX') contentHtml = renderMostCardsChart(); // Aggregated cards per year, ranked
+    else if (tab === 'refs') contentHtml = renderRefsChart(leaderboardData.mostReffed || []);
+    else if (tab === 'attendance') contentHtml = renderAttendanceChart();
+    else if (tab === 'hosted') contentHtml = renderHostedChart(leaderboardData.mostHosted || []);
+
+    // Render tabs into the pinned tabs container (below body, above all-time icon)
+    if (tabsContainer) tabsContainer.innerHTML = `<div class="chart-tabs">${tabsHtml}</div>`;
+    // Render content into the scrollable body
+    body.innerHTML = `<div id="chart-content">${contentHtml}</div>`;
+    body.scrollTop = 0;
+}
+
+// Chart 1: Most Titles — star bars (inverted pyramid)
+function renderTitlesChart(data) {
+    if (!data.length) return '<p style="color:#888;text-align:center;padding:20px;">No data</p>';
+    const maxVal = Math.max(...data.map(d => d.stars));
+    const maxW = 600, minW = 120;
+    const tab = currentLeaderboardTab;
+    let html = '<div style="display:flex;flex-direction:column;align-items:center;gap:2px;">';
+    data.forEach((d) => {
+        const pct = maxVal > 0 ? d.stars / maxVal : 0;
+        const width = minW + (maxW - minW) * pct;
+        const stars = '★'.repeat(d.stars);
+        const barH = 50; // increased to fit stars + name stacked
+        // Flex column: stars on top, team name below — both centered, no overlap
+        // Team name is clickable → opens team profile with back button
+        html += `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:${width}px;height:${barH}px;margin-bottom:3px;cursor:pointer;" onclick="window.__lbClickTeam('${esc(d.name)}', '${tab}')">`;
+        html += `<div style="font-size:1.1rem;color:#FFD700;letter-spacing:3px;text-shadow:0 0 8px rgba(255,215,0,0.4);white-space:nowrap;line-height:1;">${stars}</div>`;
+        html += `<div style="font-size:0.75rem;font-weight:700;color:#fff;text-shadow:0 1px 4px rgba(0,0,0,0.9);white-space:nowrap;margin-top:2px;">${esc(d.name)}</div>`;
+        html += `</div>`;
+    });
+    html += '</div>';
+    return html;
+}
+
+// Chart 2: Top Scorers — split (alltime aggregate left, best single-year right)
+function renderScorersChart(data) {
+    if (!data.length) return '<p style="color:#888;text-align:center;padding:20px;">No data</p>';
+    const playerBestYear = {};
+    for (const year of getCrossYearSources()) {
+        const varName = `FWCD_${year}`;
+        if (!window[varName] || !window[varName].players_FULL) continue;
+        window[varName].players_FULL.forEach(p => {
+            if (!p.name) return;
+            const goals = p.goals || 0;
+            if (!playerBestYear[p.name] || goals > playerBestYear[p.name].goals) playerBestYear[p.name] = { goals, year };
+        });
+    }
+    const maxAgg = Math.max(...data.map(d => d.goals));
+    const maxYear = Math.max(...data.map(d => (playerBestYear[d.name] || {goals:0}).goals));
+    const maxVal = Math.max(maxAgg, maxYear);
+    const halfMax = 280;
+    const tab = currentLeaderboardTab;
+    let html = '<div style="display:flex;flex-direction:column;align-items:center;gap:4px;">';
+    html += '<div style="display:flex;width:100%;justify-content:center;gap:20px;margin-bottom:6px;font-size:0.65rem;color:#888;text-transform:uppercase;letter-spacing:1px;"><span>← All-Time</span><span>Best Year →</span></div>';
+    data.slice(0, 12).forEach((d) => {
+        const aggGoals = d.goals;
+        const yearData = playerBestYear[d.name] || { goals: 0, year: '' };
+        const yearGoals = yearData.goals;
+        const leftW = (halfMax * aggGoals / maxVal);
+        const rightW = (halfMax * yearGoals / maxVal);
+        const barH = 32;
+        // Player name is clickable → opens player profile with back button
+        html += `<div class="chart-label" style="cursor:pointer;" onclick="window.__lbClickPlayer('${esc(d.name)}', [], '${tab}')">${esc(d.name)}</div>`;
+        html += `<div class="split-row" style="height:${barH}px;">`;
+        html += `<div class="split-spacer" style="width:${halfMax - leftW}px;"></div>`;
+        // Both bars clickable → opens player profile
+        html += `<div class="split-left" style="width:${Math.max(leftW,20)}px;height:100%;background:rgba(255,215,0,0.7);font-size:0.7rem;cursor:pointer;" onclick="window.__lbClickPlayer('${esc(d.name)}', [], '${tab}')">${aggGoals}</div>`;
+        html += `<div class="split-center" style="height:100%;"></div>`;
+        html += `<div class="split-right" style="width:${Math.max(rightW,20)}px;height:100%;background:rgba(212,175,55,0.4);font-size:0.7rem;cursor:pointer;" onclick="window.__lbClickPlayer('${esc(d.name)}', [], '${tab}')">${yearGoals} (${yearData.year})</div>`;
+        html += `<div class="split-spacer" style="width:${halfMax - rightW}px;"></div>`;
+        html += `</div>`;
+    });
+    html += '</div>';
+    return html;
+}
+
+// Chart 3: Most Carded — side-by-side (Most Carded Matches LEFT, Most Carded Players RIGHT)
+// Left: two stacked sections (Most Reds in a Match, Most Yellows in a Match) — top 10 each
+// Right: split layout (Most Reds by Player left, Most Yellows by Player right) — top 10 each
+function renderCardsChart() {
+    const playerYearCards = {};
+    const matchCards = []; // { year, homeTeam, awayTeam, homeScore, awayScore, stage, yellows, reds }
+    const stageMap = { 'r16': 'R16', 'qf': 'QF', 'sf': 'SF', 'final': 'Final', '3rd': '3rd', 'group': 'Group', 'round_of_16': 'R16', 'quarter_final': 'QF', 'semi_final': 'SF', 'third_place': '3rd' };
+
+    for (const year of getCrossYearSources()) {
+        const varName = `FWCD_${year}`;
+        if (!window[varName] || !window[varName].matches_FULL) continue;
+        const yearCards = {};
+        window[varName].matches_FULL.forEach(m => {
+            let mYellows = 0, mReds = 0;
+            (m.cards || []).forEach(c => {
+                if (c.color === 'yellow') mYellows++;
+                else if (c.color === 'red') mReds++;
+                if (!c.player) return;
+                if (!yearCards[c.player]) yearCards[c.player] = { yellows: 0, reds: 0 };
+                if (c.color === 'yellow') yearCards[c.player].yellows++;
+                else if (c.color === 'red') yearCards[c.player].reds++;
+            });
+            // Collect matches with at least one card
+            if (mYellows + mReds > 0) {
+                const stageLabel = stageMap[m.stage] || stageMap[m.stageRaw] || (m.stage || '').replace(/_/g, ' ') || 'Group';
+                matchCards.push({
+                    year, homeTeam: m.homeTeam, awayTeam: m.awayTeam,
+                    homeScore: m.homeScore, awayScore: m.awayScore,
+                    stage: stageLabel, yellows: mYellows, reds: mReds
+                });
+            }
+        });
+        Object.entries(yearCards).forEach(([name, c]) => {
+            if (!playerYearCards[name]) playerYearCards[name] = [];
+            playerYearCards[name].push({ year, yellows: c.yellows, reds: c.reds });
+        });
+    }
+
+    // Player leaders
+    const redLeaders = [], yellowLeaders = [];
+    Object.entries(playerYearCards).forEach(([name, years]) => {
+        const bestRed = years.reduce((best, y) => y.reds > best.reds ? y : best, { reds: 0, year: '' });
+        const bestYellow = years.reduce((best, y) => y.yellows > best.yellows ? y : best, { yellows: 0, year: '' });
+        if (bestRed.reds > 0) redLeaders.push({ name, reds: bestRed.reds, year: bestRed.year });
+        if (bestYellow.yellows > 0) yellowLeaders.push({ name, yellows: bestYellow.yellows, year: bestYellow.year });
+    });
+    redLeaders.sort((a, b) => b.reds - a.reds);
+    yellowLeaders.sort((a, b) => b.yellows - a.yellows);
+    const topPlayerReds = redLeaders.slice(0, 10);
+    const topPlayerYellows = yellowLeaders.slice(0, 10);
+
+    // Match leaders
+    const matchRedLeaders = matchCards.filter(m => m.reds > 0).sort((a, b) => b.reds - a.reds).slice(0, 10);
+    const matchYellowLeaders = matchCards.filter(m => m.yellows > 0).sort((a, b) => b.yellows - a.yellows).slice(0, 10);
+
+    if (!topPlayerReds.length && !topPlayerYellows.length && !matchRedLeaders.length && !matchYellowLeaders.length) {
+        return '<p style="color:#888;text-align:center;padding:20px;">No card data</p>';
+    }
+
+    // --- SHARED SCALE: use the max reds/yellows across BOTH matches and players ---
+    const sharedMaxReds = Math.max(
+        ...matchRedLeaders.map(m => m.reds),
+        ...topPlayerReds.map(d => d.reds),
+        1
+    );
+    const sharedMaxYellows = Math.max(
+        ...matchYellowLeaders.map(m => m.yellows),
+        ...topPlayerYellows.map(d => d.yellows),
+        1
+    );
+
+    // --- LEFT COLUMN: Most Carded Matches (single split chart — reds left, yellows right) ---
+    const matchHalfMax = 130;
+    const tab = currentLeaderboardTab;
+    let leftHtml = '<div style="display:flex;flex-direction:column;align-items:center;gap:4px;">';
+    leftHtml += '<div style="display:flex;width:100%;justify-content:center;gap:20px;margin-bottom:6px;font-size:0.65rem;color:#888;text-transform:uppercase;letter-spacing:1px;"><span>← Most Reds (Match)</span><span>Most Yellows (Match) →</span></div>';
+    const matchMaxRows = Math.max(matchRedLeaders.length, matchYellowLeaders.length);
+    for (let i = 0; i < matchMaxRows; i++) {
+        const red = matchRedLeaders[i], yel = matchYellowLeaders[i];
+        const leftW = red ? matchHalfMax * red.reds / sharedMaxReds : 0;
+        const rightW = yel ? matchHalfMax * yel.yellows / sharedMaxYellows : 0;
+        const redLabel = red ? `${red.reds}` : '';
+        const yelLabel = yel ? `${yel.yellows}` : '';
+        // Match descriptions are clickable → opens match view with back button
+        const redMatch = red ? `<span style="cursor:pointer;color:#fff;" onclick="window.__lbShowMatch(${red.year}, '${esc(red.homeTeam)}', '${esc(red.awayTeam)}', '${esc(red.homeTeam)}', '${tab}')">${esc(red.homeTeam)} ${red.homeScore}-${red.awayScore} ${esc(red.awayTeam)}</span> <span style="color:#4a8fe7;">${red.stage}</span> <span style="color:#666;">'${String(red.year).slice(-2)}</span>` : '';
+        const yelMatch = yel ? `<span style="cursor:pointer;color:#fff;" onclick="window.__lbShowMatch(${yel.year}, '${esc(yel.homeTeam)}', '${esc(yel.awayTeam)}', '${esc(yel.homeTeam)}', '${tab}')">${esc(yel.homeTeam)} ${yel.homeScore}-${yel.awayScore} ${esc(yel.awayTeam)}</span> <span style="color:#4a8fe7;">${yel.stage}</span> <span style="color:#666;">'${String(yel.year).slice(-2)}</span>` : '';
+        // Allow wrapping (no ellipsis) so full match description is visible
+        leftHtml += `<div style="display:flex;width:100%;justify-content:center;gap:4px;font-size:0.6rem;color:#ccc;margin-bottom:1px;line-height:1.3;"><span style="flex:1;text-align:right;">${redMatch}</span><span style="flex:1;text-align:left;">${yelMatch}</span></div>`;
+        leftHtml += `<div class="split-row" style="height:24px;">`;
+        leftHtml += `<div class="split-spacer" style="width:${matchHalfMax - leftW}px;"></div>`;
+        // Red bar is clickable → opens red match view
+        const redBarAttrs = red ? ` style="width:${Math.max(leftW,16)}px;height:100%;background:rgba(255,80,80,0.7);font-size:0.62rem;cursor:pointer;" onclick="window.__lbShowMatch(${red.year}, '${esc(red.homeTeam)}', '${esc(red.awayTeam)}', '${esc(red.homeTeam)}', '${tab}')"` : ` style="width:${Math.max(leftW,16)}px;height:100%;background:rgba(255,80,80,0.7);font-size:0.62rem;"`;
+        leftHtml += `<div class="split-left"${redBarAttrs}>${redLabel}</div>`;
+        leftHtml += `<div class="split-center" style="height:100%;"></div>`;
+        // Yellow bar is clickable → opens yellow match view
+        const yelBarAttrs = yel ? ` style="width:${Math.max(rightW,16)}px;height:100%;background:rgba(255,225,77,0.6);font-size:0.62rem;cursor:pointer;" onclick="window.__lbShowMatch(${yel.year}, '${esc(yel.homeTeam)}', '${esc(yel.awayTeam)}', '${esc(yel.homeTeam)}', '${tab}')"` : ` style="width:${Math.max(rightW,16)}px;height:100%;background:rgba(255,225,77,0.6);font-size:0.62rem;"`;
+        leftHtml += `<div class="split-right"${yelBarAttrs}>${yelLabel}</div>`;
+        leftHtml += `<div class="split-spacer" style="width:${matchHalfMax - rightW}px;"></div>`;
+        leftHtml += `</div>`;
+    }
+    leftHtml += '</div>';
+
+    // --- RIGHT COLUMN: Most Carded Players (split layout, top 10) ---
+    const halfMax = 130;
+    let rightHtml = '<div style="display:flex;flex-direction:column;align-items:center;gap:4px;">';
+    rightHtml += '<div style="display:flex;width:100%;justify-content:center;gap:20px;margin-bottom:6px;font-size:0.65rem;color:#888;text-transform:uppercase;letter-spacing:1px;"><span>← Most Reds (Year)</span><span>Most Yellows (Year) →</span></div>';
+    const maxRows = Math.max(topPlayerReds.length, topPlayerYellows.length);
+    for (let i = 0; i < maxRows; i++) {
+        const red = topPlayerReds[i], yel = topPlayerYellows[i];
+        const leftW = red ? halfMax * red.reds / sharedMaxReds : 0;
+        const rightW = yel ? halfMax * yel.yellows / sharedMaxYellows : 0;
+        const barH = 24;
+        const redLabel = red ? `${red.reds} (${red.year})` : '';
+        const yelLabel = yel ? `${yel.yellows} (${yel.year})` : '';
+        // Player names are clickable → opens player profile with back button
+        const redName = red ? `<span style="cursor:pointer;" onclick="window.__lbClickPlayer('${esc(red.name)}', [], '${tab}')">${esc(red.name)}</span>` : '';
+        const yelName = yel ? `<span style="cursor:pointer;" onclick="window.__lbClickPlayer('${esc(yel.name)}', [], '${tab}')">${esc(yel.name)}</span>` : '';
+        rightHtml += `<div class="chart-label" style="font-size:0.62rem;">${redName} | ${yelName}</div>`;
+        rightHtml += `<div class="split-row" style="height:${barH}px;">`;
+        rightHtml += `<div class="split-spacer" style="width:${halfMax - leftW}px;"></div>`;
+        // Red bar is clickable → opens red player profile
+        const redPlayerBarAttrs = red ? ` style="width:${Math.max(leftW,16)}px;height:100%;background:rgba(255,80,80,0.7);font-size:0.62rem;cursor:pointer;" onclick="window.__lbClickPlayer('${esc(red.name)}', [], '${tab}')"` : ` style="width:${Math.max(leftW,16)}px;height:100%;background:rgba(255,80,80,0.7);font-size:0.62rem;"`;
+        rightHtml += `<div class="split-left"${redPlayerBarAttrs}>${redLabel}</div>`;
+        rightHtml += `<div class="split-center" style="height:100%;"></div>`;
+        // Yellow bar is clickable → opens yellow player profile
+        const yelPlayerBarAttrs = yel ? ` style="width:${Math.max(rightW,16)}px;height:100%;background:rgba(255,225,77,0.6);font-size:0.62rem;cursor:pointer;" onclick="window.__lbClickPlayer('${esc(yel.name)}', [], '${tab}')"` : ` style="width:${Math.max(rightW,16)}px;height:100%;background:rgba(255,225,77,0.6);font-size:0.62rem;"`;
+        rightHtml += `<div class="split-right"${yelPlayerBarAttrs}>${yelLabel}</div>`;
+        rightHtml += `<div class="split-spacer" style="width:${halfMax - rightW}px;"></div>`;
+        rightHtml += `</div>`;
+    }
+    rightHtml += '</div>';
+
+    // --- COMBINE: side by side ---
+    let html = `<div style="display:flex;gap:12px;align-items:flex-start;justify-content:center;overflow:hidden;">`;
+    html += `<div style="flex:0 0 auto;"><div style="text-align:center;font-size:0.8rem;font-weight:700;color:#FFD700;margin-bottom:8px;">Most Carded Matches</div>${leftHtml}</div>`;
+    html += `<div style="flex:0 0 auto;"><div style="text-align:center;font-size:0.8rem;font-weight:700;color:#FFD700;margin-bottom:8px;">Most Carded Players</div>${rightHtml}</div>`;
+    html += `</div>`;
+    return html;
+}
+
+// Chart 3b: Most Cards — aggregated yellow/red cards per year, ranked by total
+// Shows: for each World Cup year, total yellows and reds across all matches.
+// Ranked by total cards (yellows + reds) descending.
+function renderMostCardsChart() {
+    const yearCards = []; // { year, yellows, reds, total }
+    for (const year of getCrossYearSources()) {
+        const varName = `FWCD_${year}`;
+        if (!window[varName] || !window[varName].matches_FULL) continue;
+        let yellows = 0, reds = 0;
+        window[varName].matches_FULL.forEach(m => {
+            (m.cards || []).forEach(c => {
+                if (c.color === 'yellow') yellows++;
+                else if (c.color === 'red') reds++;
+            });
+        });
+        if (yellows + reds > 0) yearCards.push({ year, yellows, reds, total: yellows + reds });
+    }
+    if (!yearCards.length) return '<p style="color:#888;text-align:center;padding:20px;">No card data</p>';
+    // Sort by total descending (most cards first)
+    yearCards.sort((a, b) => b.total - a.total);
+
+    // Use a split bar (stacked horizontal): reds on left, yellows on right, scaled by max total
+    const maxTotal = Math.max(...yearCards.map(d => d.total), 1);
+    const halfMax = 220; // max width for each side (reds left, yellows right)
+    const maxReds = Math.max(...yearCards.map(d => d.reds), 1);
+    const maxYellows = Math.max(...yearCards.map(d => d.yellows), 1);
+
+    let html = '<div style="display:flex;flex-direction:column;align-items:center;gap:4px;">';
+    html += '<div style="display:flex;width:100%;justify-content:center;gap:20px;margin-bottom:6px;font-size:0.65rem;color:#888;text-transform:uppercase;letter-spacing:1px;"><span>← Reds</span><span>Yellows →</span></div>';
+    yearCards.forEach(d => {
+        const leftW = halfMax * d.reds / maxReds;
+        const rightW = halfMax * d.yellows / maxYellows;
+        const barH = 30;
+        const redLabel = d.reds > 0 ? `${d.reds}` : '';
+        const yelLabel = d.yellows > 0 ? `${d.yellows}` : '';
+        html += `<div class="chart-label" style="cursor:pointer;" onclick="window.__lbClickYear(${d.year}, 'chartX')">${d.year} — ${d.total} total</div>`;
+        html += `<div class="split-row" style="height:${barH}px;cursor:pointer;" onclick="window.__lbClickYear(${d.year}, 'chartX')">`;
+        html += `<div class="split-spacer" style="width:${halfMax - leftW}px;"></div>`;
+        html += `<div class="split-left" style="width:${Math.max(leftW,20)}px;height:100%;background:rgba(255,80,80,0.7);font-size:0.68rem;">${redLabel}</div>`;
+        html += `<div class="split-center" style="height:100%;"></div>`;
+        html += `<div class="split-right" style="width:${Math.max(rightW,20)}px;height:100%;background:rgba(255,225,77,0.6);font-size:0.68rem;">${yelLabel}</div>`;
+        html += `<div class="split-spacer" style="width:${halfMax - rightW}px;"></div>`;
+        html += `</div>`;
+    });
+    html += '</div>';
+    return html;
+}
+
+// Chart 4: Most Refed — pyramid
+function renderRefsChart(data) {
+    if (!data.length) return '<p style="color:#888;text-align:center;padding:20px;">No data</p>';
+    const maxVal = Math.max(...data.map(d => d.matches));
+    const maxW = 500, minW = 80;
+    const tab = currentLeaderboardTab;
+    let html = '<div style="display:flex;flex-direction:column;align-items:center;gap:3px;">';
+    data.forEach((d, i) => {
+        const pct = maxVal > 0 ? d.matches / maxVal : 0;
+        const width = minW + (maxW - minW) * pct;
+        const t = i / Math.max(data.length - 1, 1);
+        const r = Math.round(255 - (255 - 100) * t), g = Math.round(215 - (215 - 60) * t), b = Math.round(0 + 80 * t);
+        const barH = 36;
+        // Ref name is clickable → opens ref profile with back button
+        html += `<div class="pyramid-bar" style="width:${width}px;height:${barH}px;background:rgba(${r},${g},${b},0.8);opacity:0.9;cursor:pointer;" onclick="window.__lbClickRef('${esc(d.name)}', '${tab}')">`;
+        html += `<div class="pyramid-bar-text" style="font-size:0.75rem;">${esc(d.name)} — ${d.matches}</div>`;
+        html += `</div>`;
+    });
+    html += '</div>';
+    return html;
+}
+
+// Chart 5: Most Attendance — split (most attended year left, most attended match right)
+function renderAttendanceChart() {
+    const yearTotals = {}, topMatches = [];
+    for (const year of getCrossYearSources()) {
+        const varName = `FWCD_${year}`;
+        if (!window[varName] || !window[varName].matches_FULL) continue;
+        let yearTotal = 0;
+        window[varName].matches_FULL.forEach(m => {
+            const att = m.attendance || (m.stadiumFullDetails || m.stadiumFULLDetails || {}).attendance;
+            if (att) { const attNum = parseInt(att); yearTotal += attNum; topMatches.push({ year, homeTeam: m.homeTeam, awayTeam: m.awayTeam, attendance: attNum }); }
+        });
+        if (yearTotal > 0) yearTotals[year] = yearTotal;
+    }
+    const sortedYears = Object.entries(yearTotals).map(([year, total]) => ({ year: parseInt(year), total })).sort((a, b) => b.total - a.total).slice(0, 8);
+    const sortedMatches = topMatches.sort((a, b) => b.attendance - a.attendance).slice(0, 8);
+    if (!sortedYears.length && !sortedMatches.length) return '<p style="color:#888;text-align:center;padding:20px;">No attendance data</p>';
+    const maxYearTotal = Math.max(...sortedYears.map(d => d.total), 1);
+    const maxMatchAtt = Math.max(...sortedMatches.map(d => d.attendance), 1);
+    const halfMax = 220;
+    let html = '<div style="display:flex;flex-direction:column;align-items:center;gap:4px;">';
+    html += '<div style="display:flex;width:100%;justify-content:center;gap:20px;margin-bottom:6px;font-size:0.65rem;color:#888;text-transform:uppercase;letter-spacing:1px;"><span>← Most Attended Year</span><span>Most Attended Match →</span></div>';
+    const maxRows = Math.max(sortedYears.length, sortedMatches.length);
+    for (let i = 0; i < maxRows; i++) {
+        const yr = sortedYears[i], mt = sortedMatches[i];
+        const leftW = yr ? halfMax * yr.total / maxYearTotal : 0;
+        const rightW = mt ? halfMax * mt.attendance / maxMatchAtt : 0;
+        const barH = 30;
+        const leftLabel = yr ? (yr.total / 1000000).toFixed(1) + 'M (' + yr.year + ')' : '';
+        const rightLabel = mt ? (mt.attendance / 1000).toFixed(0) + 'k (' + mt.year + ')' : '';
+        const leftName = yr ? 'Year ' + yr.year : '';
+        // Match name is clickable → opens match view with back button
+        const rightName = mt ? `<span style="cursor:pointer;" onclick="window.__lbShowMatch(${mt.year}, '${esc(mt.homeTeam)}', '${esc(mt.awayTeam)}', '${esc(mt.homeTeam)}', 'attendance')">${esc(mt.homeTeam)} vs ${esc(mt.awayTeam)}</span>` : '';
+        html += `<div class="chart-label">${esc(leftName)} | ${rightName}</div>`;
+        html += `<div class="split-row" style="height:${barH}px;">`;
+        html += `<div class="split-spacer" style="width:${halfMax - leftW}px;"></div>`;
+        html += `<div class="split-left" style="width:${Math.max(leftW,20)}px;height:100%;background:rgba(100,180,255,0.6);font-size:0.68rem;">${leftLabel}</div>`;
+        html += `<div class="split-center" style="height:100%;"></div>`;
+        // Right bar (match) is clickable → opens match view
+        const matchBarAttrs = mt ? ` style="width:${Math.max(rightW,20)}px;height:100%;background:rgba(60,120,200,0.5);font-size:0.68rem;cursor:pointer;" onclick="window.__lbShowMatch(${mt.year}, '${esc(mt.homeTeam)}', '${esc(mt.awayTeam)}', '${esc(mt.homeTeam)}', 'attendance')"` : ` style="width:${Math.max(rightW,20)}px;height:100%;background:rgba(60,120,200,0.5);font-size:0.68rem;"`;
+        html += `<div class="split-right"${matchBarAttrs}>${rightLabel}</div>`;
+        html += `<div class="split-spacer" style="width:${halfMax - rightW}px;"></div>`;
+        html += `</div>`;
+    }
+    html += '</div>';
+    return html;
+}
+
+// Chart 6: Most Hosted — pyramid
+function renderHostedChart(data) {
+    if (!data.length) return '<p style="color:#888;text-align:center;padding:20px;">No data</p>';
+    const maxVal = Math.max(...data.map(d => d.matches));
+    const maxW = 500, minW = 80;
+    const tab = currentLeaderboardTab;
+    let html = '<div style="display:flex;flex-direction:column;align-items:center;gap:3px;">';
+    data.forEach((d, i) => {
+        const pct = maxVal > 0 ? d.matches / maxVal : 0;
+        const width = minW + (maxW - minW) * pct;
+        const t = i / Math.max(data.length - 1, 1);
+        const r = Math.round(80 + 120 * t), g = Math.round(160 - 80 * t), b = Math.round(200 - 100 * t);
+        const barH = 36;
+        // Stadium name is clickable → opens stadium profile with back button
+        html += `<div class="pyramid-bar" style="width:${width}px;height:${barH}px;background:rgba(${r},${g},${b},0.8);opacity:0.9;cursor:pointer;" onclick="window.__lbClickStadium('${esc(d.stadium)}', '${tab}')">`;
+        html += `<div class="pyramid-bar-text" style="font-size:0.75rem;">${esc(d.stadium)} — ${d.matches}</div>`;
+        html += `</div>`;
+    });
+    html += '</div>';
+    return html;
+}
+
+// Leaderboard click handlers — render INSIDE the leaderboard overlay (self-contained)
+
+// Build a Year Summary card showing all data points for a given World Cup year.
+// Used when clicking a year in chart bars (e.g., Most Cards → 1994 bar → 1994 Summary).
+// Navigation: ← Back returns to the chart that launched it.
+async function buildYearSummary(year, body, fromTab) {
+    const varName = `FWCD_${year}`;
+    if (!window[varName]) {
+        body.innerHTML = '<p style="color:#888; text-align:center; padding:40px;">No data available for ' + year + '</p>';
+        return;
+    }
+    const data = window[varName];
+
+    // Collect all data points
+    const matches = data.matches_FULL || [];
+    const teams = data.teams_summary || [];
+    const players = data.players_FULL || [];
+    const standings = data.standings || {};
+    const trivia = data.trivia || [];
+    const bracket = data.bracket || null;
+
+    // Aggregate stats
+    let totalGoals = 0, totalCards = 0, totalYellows = 0, totalReds = 0, totalAttendance = 0;
+    let totalMatches = matches.length;
+    const stadiumSet = new Set();
+    const refSet = new Set();
+
+    matches.forEach(m => {
+        totalGoals += (m.homeScore || 0) + (m.awayScore || 0);
+        const cards = m.cards || [];
+        totalCards += cards.length;
+        totalYellows += cards.filter(c => c.color === 'yellow').length;
+        totalReds += cards.filter(c => c.color === 'red').length;
+        const att = m.attendance || (m.stadiumFullDetails || m.stadiumFULLDetails || {}).attendance;
+        if (att) totalAttendance += parseInt(att);
+        if (m.stadium) stadiumSet.add(m.stadium);
+        if (m.referee && m.referee.name) refSet.add(m.referee.name);
+    });
+
+    // Top scorers
+    const scorerMap = {};
+    players.forEach(p => {
+        if (p.goals && p.goals > 0) scorerMap[p.name] = (scorerMap[p.name] || 0) + p.goals;
+    });
+    const topScorers = Object.entries(scorerMap).sort((a, b) => b[1] - a[1]).slice(0, 10);
+
+    // Champion
+    const champion = teams.find(t => t.finalPosition === 1);
+    const runnerUp = teams.find(t => t.finalPosition === 2);
+    const thirdPlace = teams.find(t => t.finalPosition === 3);
+
+    // Host
+    const host = typeof fifaWorldCupParticipants !== 'undefined'
+        ? fifaWorldCupParticipants.find(p => p.year === parseInt(year) && p.Success === 'Host')
+        : null;
+
+    // Build stats grid
+    const statsHtml = `
+        <div class="hist-stat-grid" style="grid-template-columns:1fr 1fr 1fr 1fr; margin-bottom:14px;">
+            <div class="hist-stat-box"><span class="hist-stat-val">${totalMatches}</span><span class="hist-stat-lbl">Matches</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${totalGoals}</span><span class="hist-stat-lbl">Goals</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${totalCards}</span><span class="hist-stat-lbl">Cards</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${stadiumSet.size}</span><span class="hist-stat-lbl">Stadiums</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${totalYellows}</span><span class="hist-stat-lbl">Yellow Cards</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${totalReds}</span><span class="hist-stat-lbl">Red Cards</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${refSet.size}</span><span class="hist-stat-lbl">Referees</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${teams.length}</span><span class="hist-stat-lbl">Teams</span></div>
+        </div>`;
+
+    // Build top scorers list
+    const topScorersHtml = topScorers.length ? `
+        <div class="hist-info-col">
+            <h4>Top Scorers</h4>
+            ${topScorers.map(([name, goals]) => {
+                const p = players.find(pl => pl.name === name);
+                const team = p ? p.current_team_context : '';
+                return `<p style="cursor:pointer;" onclick="window.__lbClickPlayer('${esc(name)}', [], '${fromTab || ''}')">${flagImg(team)} ${name} — ${goals}⚽</p>`;
+            }).join('')}
+        </div>` : '';
+
+    // Build podium
+    const podiumHtml = `
+        <div class="hist-info-col">
+            <h4>Podium</h4>
+            ${champion ? `<p>🥇 ${flagImg(champion.name)} ${champion.name}</p>` : ''}
+            ${runnerUp ? `<p>🥈 ${flagImg(runnerUp.name)} ${runnerUp.name}</p>` : ''}
+            ${thirdPlace ? `<p>🥉 ${flagImg(thirdPlace.name)} ${thirdPlace.name}</p>` : ''}
+        </div>`;
+
+    // Build tournament info
+    const tournamentInfoHtml = `
+        <div class="hist-info-col">
+            <h4>Tournament Info</h4>
+            ${host ? `<p><strong>Host:</strong> ${host.name}</p>` : ''}
+            <p><strong>Total Attendance:</strong> ${totalAttendance > 0 ? totalAttendance.toLocaleString() : 'N/A'}</p>
+            <p><strong>Avg Goals/Match:</strong> ${totalMatches > 0 ? (totalGoals / totalMatches).toFixed(2) : 'N/A'}</p>
+            <p><strong>Avg Cards/Match:</strong> ${totalMatches > 0 ? (totalCards / totalMatches).toFixed(2) : 'N/A'}</p>
+        </div>`;
+
+    // Build matches list as match cards (similar to team profile)
+    const stageMap = { 'r16': 'R16', 'qf': 'QF', 'sf': 'SF', 'final': 'Final', '3rd': '3rd', 'group': 'Group', 'round_of_16': 'R16', 'quarter_final': 'QF', 'semi_final': 'SF', 'third_place': '3rd', 'r32': 'R32', 'round_of_32': 'R32' };
+    const matchesListHtml = matches.length ? `
+        <h3 style="color:#FFD700; margin:14px 0 8px;">Matches (${matches.length})</h3>
+        <div class="hist-match-grid">
+            ${matches.map(m => {
+                const stLabel = stageMap[m.stage] || stageMap[m.stageRaw] || (m.stage || '').replace(/_/g, ' ');
+                const dateStr = m.date ? new Date(m.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+                return `
+                    <div class="hist-match-card" onclick="window.__lbShowMatch(${year}, '${esc(m.homeTeam)}', '${esc(m.awayTeam)}', '${esc(m.homeTeam)}', '${fromTab || ''}')">
+                        <span class="mc-date">${dateStr}</span>
+                        <div class="mc-teams">
+                            <span class="mc-team">${flagImg(m.homeTeam)} ${m.homeTeam || ''}</span>
+                            <span class="mc-score">${m.homeScore != null ? m.homeScore : '-'}-${m.awayScore != null ? m.awayScore : '-'}</span>
+                            <span class="mc-team">${flagImg(m.awayTeam)} ${m.awayTeam || ''}</span>
+                        </div>
+                        <span class="mc-stage">${stLabel}</span>
+                    </div>`;
+            }).join('')}
+        </div>` : '';
+
+    // Trivia
+    const triviaHtml = trivia.length ? `
+        <div class="hist-info-col">
+            <h4>Trivia</h4>
+            ${trivia.slice(0, 5).map(t => `<p style="font-size:0.65rem;color:#aaa;">• ${esc(typeof t === 'string' ? t : (t.text || t.fact || JSON.stringify(t)))}</p>`).join('')}
+        </div>` : '';
+
+    // Back button
+    const backBtn = fromTab
+        ? `<div class="lb-tab" onclick="renderLeaderboardTab('${fromTab}')" style="margin-bottom:12px; cursor:pointer;">← Leaderboard</div>`
+        : `<div class="lb-tab" onclick="lbNavBack()" style="margin-bottom:12px; cursor:pointer;">← Back</div>`;
+
+    body.innerHTML = `
+        ${backBtn}
+        <div style="text-align:center; margin-bottom:14px;">
+            <div style="font-size:1.6rem; font-weight:700; color:#FFD700;">🏆 ${year} World Cup Summary</div>
+            ${host ? `<div style="font-size:0.85rem; color:#888;">Hosted by ${host.name}</div>` : ''}
+        </div>
+        ${statsHtml}
+        <div class="hist-info-grid">
+            ${podiumHtml}
+            ${tournamentInfoHtml}
+            ${topScorersHtml}
+        </div>
+        ${matchesListHtml}
+        ${triviaHtml ? `<div class="hist-info-grid" style="grid-template-columns:1fr;">${triviaHtml}</div>` : ''}
+    `;
+    body.scrollTop = 0;
+}
+
+// Open year summary from chart click
+window.__lbClickYear = async function(year, fromTab) {
+    const body = getActiveProfileBody();
+    if (!body) return;
+    if (fromTab) {
+        lbNavClear();
+        lbNavPush(`renderLeaderboardTab('${fromTab}')`);
+    }
+    body.innerHTML = '<p style="color:#888; text-align:center; padding:40px;">Loading ' + year + ' summary...</p>';
+    await buildYearSummary(year, body, fromTab);
+};
+
+// Build aggregated player profile across all World Cups (for leaderboard & search)
+// Shows: header with photo, aggregate stats, WC appearances (clickable), match history with goals/cards
+async function buildPlayerLeaderboardProfile(playerName, body) {
+    // Collect all data for this player across all years
+    const yearData = []; // { year, team, position, jersey, goals, matches: [{opponent, score, date, stage, goalsScored, cardsReceived}] }
+    let totalGoals = 0, totalCards = 0, totalMatches = 0;
+    let bestYear = null, bestYearGoals = 0;
+
+    for (const year of getCrossYearSources()) {
+        const varName = `FWCD_${year}`;
+        if (!window[varName]) continue;
+        const data = window[varName];
+
+        // Find player in players_FULL
+        const playerData = data.players_FULL && data.players_FULL.find(p => p.name === playerName);
+        if (!playerData) continue;
+
+        // Find all matches this player participated in (handles team name aliases)
+        const playerMatches = [];
+        const teamCtx = playerData.current_team_context;
+        const yrMatches = (data.matches_FULL || []).filter(m => matchInvolvesTeam(m, teamCtx));
+
+        yrMatches.forEach(m => {
+            // Check if player is in the lineup
+            const homeTeam = m.homeTeam || m.home || '';
+            const alias = TEAM_NAME_ALIASES[teamCtx];
+            const isHome = homeTeam === teamCtx || (alias && homeTeam === alias);
+            const lineup = isHome ? (m.lineups && m.lineups.home) : (m.lineups && m.lineups.away);
+            if (!lineup || !lineup.some(p => p.player === playerName && p.starter)) {
+                // Also check subs
+                if (!m.substitutions || !m.substitutions.some(s => s.on === playerName)) return;
+            }
+
+            const opponent = isHome ? m.awayTeam : m.homeTeam;
+            const teamScore = isHome ? m.homeScore : m.awayScore;
+            const oppScore = isHome ? m.awayScore : m.homeScore;
+            const stageMap = { 'r16': 'R16', 'qf': 'QF', 'sf': 'SF', 'final': 'Final', '3rd': '3rd', 'group': 'Group', 'round_of_16': 'R16', 'quarter_final': 'QF', 'semi_final': 'SF', 'third_place': '3rd' };
+            const stageLabel = stageMap[m.stage] || stageMap[m.stageRaw] || (m.stage || '').replace(/_/g, ' ');
+
+            // Find goals scored by this player in this match
+            const goalsScored = (m.goals || []).filter(g => g.scorer === playerName).map(g => g.minute);
+            // Find cards received
+            const cardsReceived = (m.cards || []).filter(c => c.player === playerName).map(c => ({ minute: c.minute, color: c.color }));
+
+            totalMatches++;
+            totalGoals += goalsScored.length;
+            totalCards += cardsReceived.length;
+
+            playerMatches.push({
+                opponent, teamScore, oppScore, date: m.date, stage: stageLabel,
+                goalsScored, cardsReceived, year
+            });
+        });
+
+        const yrGoals = playerData.goals || 0;
+        if (yrGoals > bestYearGoals) { bestYearGoals = yrGoals; bestYear = year; }
+
+        yearData.push({
+            year,
+            team: playerData.current_team_context || '',
+            position: playerData.position || '',
+            jersey: playerData.jersey || '',
+            goals: yrGoals,
+            captain: playerData.captain || false,
+            matches: playerMatches
+        });
+    }
+
+    // Sort years: most recent first
+    yearData.sort((a, b) => b.year - a.year);
+
+    // Build header
+    const mostRecent = yearData[0] || {};
+    const teamName = mostRecent.team || '';
+    const photoHtml = getPlayerPhotoHtml(playerName, teamName, 'full');
+    const titleFlag = teamName ? flagImg(teamName) : '';
+
+    // Build WC appearances (clickable)
+    const appearancesHtml = yearData.map(yd => {
+        const isBest = yd.year === bestYear && yd.goals > 0;
+        return `<div class="hist-app-item ${isBest ? 'current' : ''}" onclick="window.__lbSwitchYearForPlayer(${yd.year}, '${esc(playerName)}')" style="cursor:pointer;" title="${yd.year} - ${yd.goals} goals">
+            <span class="yr">${yd.year}</span>
+            <span class="gl">${yd.goals}G</span>
+            <span class="js">#${yd.jersey}</span>
+        </div>`;
+    }).join('');
+
+    // Build aggregate stats
+    // Use sum of official per-year goal counts (playerData.goals) for accuracy,
+    // instead of counting goals from match-level data (which may be incomplete).
+    const officialTotalGoals = yearData.reduce((sum, yd) => sum + (yd.goals || 0), 0);
+    const statsHtml = `
+        <div class="hist-stat-grid" style="grid-template-columns:1fr 1fr 1fr 1fr; margin-bottom:14px;">
+            <div class="hist-stat-box"><span class="hist-stat-val">${yearData.length}</span><span class="hist-stat-lbl">WC Tournaments</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${officialTotalGoals}</span><span class="hist-stat-lbl">Total Goals</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${totalMatches}</span><span class="hist-stat-lbl">Matches Played</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${totalCards}</span><span class="hist-stat-lbl">Cards</span></div>
+        </div>`;
+
+    // Build match history with goals/cards
+    const stageMap = { 'r16': 'R16', 'qf': 'QF', 'sf': 'SF', 'final': 'Final', '3rd': '3rd', 'group': 'Group', 'round_of_16': 'R16', 'quarter_final': 'QF', 'semi_final': 'SF', 'third_place': '3rd' };
+
+    const yearsHtml = yearData.map(yd => {
+        const matchesHtml = yd.matches.map(m => {
+            const dateStr = m.date ? new Date(m.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+            // Build readable events line
+            let eventsHtml = '';
+            if (m.goalsScored.length > 0) {
+                eventsHtml += m.goalsScored.map(g => `<span style="color:#CAEEC2; font-weight:700;">⚽ ${g}'</span>`).join(' ');
+            }
+            if (m.cardsReceived.length > 0) {
+                m.cardsReceived.forEach(c => {
+                    const icon = c.color === 'yellow' ? '🟨' : '🟥';
+                    eventsHtml += ` <span style="color:${c.color === 'yellow' ? '#f1c40f' : '#e74c3c'};">${icon} ${c.minute}'</span>`;
+                });
+            }
+            return `
+                <div class="hist-match-card" onclick="window.__lbShowMatchForPlayer(${yd.year}, '${esc(yd.team)}', '${esc(m.opponent)}', '${esc(playerName)}')">
+                    <span class="mc-date">${dateStr}</span>
+                    <div class="mc-teams">
+                        <span class="mc-team">${flagImg(yd.team)} ${yd.team}</span>
+                        <span class="mc-score">${m.teamScore}-${m.oppScore}</span>
+                        <span class="mc-team">${flagImg(m.opponent)} ${m.opponent}</span>
+                    </div>
+                    <span class="mc-stage">${m.stage}</span>
+                    ${eventsHtml ? `<div style="font-size:0.68rem; padding:2px 0; line-height:1.5;">${eventsHtml}</div>` : ''}
+                </div>`;
+        }).join('');
+
+        const yearHeader = yd.goals > 0
+            ? `<h3 style="color:#FFD700; margin:14px 0 6px;">${yd.year} — ${yd.goals} goals ${yd.captain ? '🇨' : ''}</h3>`
+            : `<h3 style="color:#ccc; margin:14px 0 6px;">${yd.year} — ${yd.captain ? 'Captain 🇨' : ''}</h3>`;
+
+        return `${yearHeader}<div class="hist-match-grid">${matchesHtml}</div>`;
+    }).join('');
+
+    body.innerHTML = `
+        <div class="hist-player-header">
+            <div class="hist-stat-grid" style="grid-template-columns:1fr; gap:4px;">
+                <div class="hist-stat-box"><span class="hist-stat-val">${yearData.length}</span><span class="hist-stat-lbl">WC Tournaments</span></div>
+                <div class="hist-stat-box"><span class="hist-stat-val">${officialTotalGoals}</span><span class="hist-stat-lbl">Total Goals</span></div>
+            </div>
+            ${photoHtml || '<div class="hist-player-photo" style="display:flex;align-items:center;justify-content:center;font-size:2rem;">👤</div>'}
+            <div class="hist-stat-grid" style="grid-template-columns:1fr; gap:4px;">
+                <div class="hist-stat-box"><span class="hist-stat-val">${totalMatches}</span><span class="hist-stat-lbl">Matches Played</span></div>
+                <div class="hist-stat-box"><span class="hist-stat-val">${totalCards}</span><span class="hist-stat-lbl">Cards</span></div>
+            </div>
+        </div>
+        <div style="text-align:center; margin-bottom:12px;">
+            <div style="font-size:1.3rem; font-weight:700; color:#FFD700;">${titleFlag} ${playerName}</div>
+            <div style="font-size:0.8rem; color:#888;">${mostRecent.position || ''} • ${yearData.length} World Cups</div>
+        </div>
+        <div class="hist-info-grid">
+            <div class="hist-info-col">
+                <h4>World Cup Appearances</h4>
+                ${yearData.map(yd => `<p style="cursor:pointer;" onclick="window.__lbSwitchYearForPlayer(${yd.year}, '${esc(playerName)}')" title="View ${yd.year}">${yd.year} — ${yd.goals}G #${yd.jersey} ${yd.captain ? '🇨' : ''}</p>`).join('')}
+            </div>
+            <div class="hist-info-col">
+                <h4>Best Year</h4>
+                <p>${bestYear || 'N/A'} — ${bestYearGoals} goals</p>
+            </div>
+            <div class="hist-info-col">
+                <h4>Position</h4>
+                <p>${mostRecent.position || 'N/A'}</p>
+                <h4 style="margin-top:6px;">Last Team</h4>
+                <p>${mostRecent.team ? flagImg(mostRecent.team) + ' ' + mostRecent.team : 'N/A'}</p>
+            </div>
+            <div class="hist-info-col">
+                <h4>Career Stats</h4>
+                <p><strong>Total Goals:</strong> ${officialTotalGoals}</p>
+                <p><strong>Matches:</strong> ${totalMatches}</p>
+                <p><strong>Cards:</strong> ${totalCards}</p>
+            </div>
+        </div>
+        <h3 style="color:#FFD700; margin:16px 0 8px;">Match History</h3>
+        ${yearsHtml}
+    `;
+}
+
+// Switch to a year and re-show the player profile (for WC Appearances click)
+window.__lbSwitchYearForPlayer = async function(year, playerName) {
+    if (parseInt(year, 10) !== parseInt(histLookups.currentYear, 10)) {
+        const yearOpt = Array.from(document.querySelectorAll('.year-option')).find(el => parseInt(el.dataset.year, 10) === parseInt(year, 10));
+        if (yearOpt) {
+            currentYearIndex = parseInt(yearOpt.dataset.index, 10);
+            selectedYear = parseInt(year, 10);
+            updateFisheyeUI();
+            filterAndDraw();
+            try { await loadHistoricalData(year); } catch (e) { console.warn(e.message); }
+            filterAndDraw();
+            updateChampionStars(year);
+        }
+    }
+    // Rebuild the player profile WITH back button (same as __lbClickPlayer, but no stack push
+    // since we're just refreshing the same view after a year switch)
+    const body = getActiveProfileBody();
+    if (body) {
+        await buildPlayerLeaderboardProfile(playerName, body);
+        const backBtn = `<div class="lb-tab" onclick="lbNavBack()" style="margin-bottom:12px; cursor:pointer;">← Back</div>`;
+        body.insertAdjacentHTML('afterbegin', backBtn);
+        body.scrollTop = 0;
+    }
+};
+
+// Show a match from player profile click — back button returns to player profile via nav stack
+window.__lbShowMatchForPlayer = async function(matchYear, homeTeam, awayTeam, playerName) {
+    // Push "return to player profile" onto nav stack
+    lbNavPush(`window.__lbClickPlayer('${esc(playerName)}', [])`);
+    if (parseInt(matchYear, 10) !== parseInt(histLookups.currentYear, 10)) {
+        const yearOpt = Array.from(document.querySelectorAll('.year-option')).find(el => parseInt(el.dataset.year, 10) === parseInt(matchYear, 10));
+        if (yearOpt) {
+            currentYearIndex = parseInt(yearOpt.dataset.index, 10);
+            selectedYear = parseInt(matchYear, 10);
+            updateFisheyeUI();
+            filterAndDraw();
+            try { await loadHistoricalData(matchYear); } catch (e) { console.warn(e.message); }
+            filterAndDraw();
+            updateChampionStars(matchYear);
+        }
+    }
+
+    const all = histLookups.allMatches || [];
+    const match = all.find(m =>
+        (m.homeTeam === homeTeam && m.awayTeam === awayTeam) ||
+        (m.homeTeam === awayTeam && m.awayTeam === homeTeam)
+    );
+    if (!match) { console.warn('Match not found:', homeTeam, awayTeam, matchYear); return; }
+
+    const storedMatchId = match.id || `${match.homeTeam}-${match.awayTeam}-${match.date}`;
+    const { match: m } = findMatchById(storedMatchId);
+    if (!m) return;
+
+    const matchBody = buildMatchBody(m, { context: getActiveContext(), matchId: storedMatchId });
+    lbCurrentMatchRebuild = `window.__lbShowMatchForPlayer(${matchYear}, '${esc(homeTeam)}', '${esc(awayTeam)}', '${esc(playerName)}')`;
+    const backBtn = `<div class="lb-tab" onclick="lbNavBack()" style="margin-bottom:12px; cursor:pointer;">← Back</div>`;
+    const body = getActiveProfileBody();
+    if (body) {
+        body.innerHTML = `<h2 style="color:#FFD700; margin:0 0 12px; font-size:1.2rem;">⚽ ${m.homeTeam} vs ${m.awayTeam}</h2>${backBtn}${matchBody}`;
+        body.scrollTop = 0;
+    }
+};
+
+window.__lbClickPlayer = async function(playerName, years, fromTab, targetBody) {
+    await ensureCrossYearIndex();
+    buildGlobalSearchIndex();
+
+    const body = targetBody || getActiveProfileBody();
+    if (!body) return;
+
+    // Push current view onto nav stack so back button can return here
+    if (fromTab) {
+        lbNavClear(); // Starting fresh from a chart — clear any old stack
+        lbNavPush(`renderLeaderboardTab('${fromTab}')`);
+    }
+
+    // Build aggregated player profile across all years
+    await buildPlayerLeaderboardProfile(playerName, body);
+
+    // Replace back button with nav stack call
+    const backBtn = `<div class="lb-tab" onclick="lbNavBack()" style="margin-bottom:12px; cursor:pointer;">← Back</div>`;
+    body.insertAdjacentHTML('afterbegin', backBtn);
+    body.scrollTop = 0;
+};
+
+window.__lbClickTeam = async function(teamName, fromTab, targetBody) {
+    await ensureCrossYearIndex();
+    buildGlobalSearchIndex();
+
+    const body = targetBody || getActiveProfileBody();
+    if (!body) return;
+
+    // Push current view onto nav stack so back button can return here
+    if (fromTab) {
+        lbNavClear();
+        lbNavPush(`renderLeaderboardTab('${fromTab}')`);
+    }
+    const backBtn = `<div class="lb-tab" onclick="lbNavBack()" style="margin-bottom:12px; cursor:pointer;">← Back</div>`;
+
+    // Get star count from FWCD_Participants — find the entry with the highest Star value
+    const getStars = (name) => {
+        if (typeof fifaWorldCupParticipants === 'undefined') return 0;
+        let maxStars = 0;
+        fifaWorldCupParticipants.forEach(p => {
+            if (p.name === name && p.Success === 'Champion' && p.Star) {
+                const s = parseInt(p.Star, 10);
+                if (s > maxStars) maxStars = s;
+            }
+        });
+        return maxStars;
+    };
+    const stars = getStars(teamName);
+
+    // Collect all data for this team across all years
+    const yearData = []; // { year, success, finalPosition, matches: [], players: [] }
+    let totalGoals = 0, totalCards = 0, totalMatches = 0, totalWins = 0, totalDraws = 0, totalLosses = 0;
+    const topScorers = {}; // playerName → total goals
+
+    for (const year of getCrossYearSources()) {
+        const varName = `FWCD_${year}`;
+        if (!window[varName]) continue;
+        const data = window[varName];
+
+        // Find team summary for this year
+        const teamSummary = data.teams_summary && data.teams_summary.find(t => t.name === teamName || TEAM_NAME_ALIASES[t.name] === teamName || t.name === TEAM_NAME_ALIASES[teamName]);
+        if (!teamSummary) continue;
+
+        // Get all matches for this team in this year (handles name aliases)
+        const yrMatches = (data.matches_FULL || []).filter(m => matchInvolvesTeam(m, teamName)).sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        // Collect goals and cards
+        yrMatches.forEach(m => {
+            totalMatches++;
+            const homeTeam = m.homeTeam || m.home || '';
+            const alias = TEAM_NAME_ALIASES[teamName];
+            const isHome = homeTeam === teamName || (alias && homeTeam === alias);
+            if (isHome) {
+                totalGoals += m.homeScore || 0;
+                if (m.homeScore > m.awayScore) totalWins++;
+                else if (m.homeScore < m.awayScore) totalLosses++;
+                else totalDraws++;
+            } else {
+                totalGoals += m.awayScore || 0;
+                if (m.awayScore > m.homeScore) totalWins++;
+                else if (m.awayScore < m.homeScore) totalLosses++;
+                else totalDraws++;
+            }
+            // Cards
+            if (m.cards) totalCards += m.cards.length;
+        });
+
+        // Collect top scorers from squad
+        if (teamSummary.squad) {
+            teamSummary.squad.forEach(p => {
+                if (p.goals && p.goals > 0) {
+                    if (!topScorers[p.name]) topScorers[p.name] = 0;
+                    topScorers[p.name] += p.goals;
+                }
+            });
+        }
+
+        yearData.push({
+            year,
+            success: teamSummary.finalPosition === 1 ? 'Champion 🏆' :
+                     teamSummary.finalPosition === 2 ? 'Runner-up' :
+                     teamSummary.finalPosition === 3 ? '3rd Place' :
+                     teamSummary.finalPosition === 4 ? '4th Place' :
+                     teamSummary.knockoutPath && teamSummary.knockoutPath.length > 0 ? `Eliminated in ${teamSummary.knockoutPath[0].stage.toUpperCase()}` :
+                     'Group Stage',
+            finalPosition: teamSummary.finalPosition,
+            matches: yrMatches
+        });
+    }
+
+    // Sort years: champions first (most recent first), then by finalPosition ascending
+    yearData.sort((a, b) => {
+        if (a.finalPosition === 1 && b.finalPosition !== 1) return -1;
+        if (b.finalPosition === 1 && a.finalPosition !== 1) return 1;
+        if (a.finalPosition === 1 && b.finalPosition === 1) return b.year - a.year;
+        return b.year - a.year;
+    });
+
+    // Build stars display
+    const starsHtml = stars > 0 ? Array.from({ length: stars }, () => '<span style="color:#FFD700; font-size:1.4rem; text-shadow:0 0 8px rgba(255,215,0,0.6);">★</span>').join('') : '<span style="color:#555;">No titles</span>';
+
+    // Build aggregate stats
+    const statsHtml = `
+        <div class="hist-stat-grid" style="grid-template-columns:1fr 1fr 1fr 1fr; margin-bottom:14px;">
+            <div class="hist-stat-box"><span class="hist-stat-val">${yearData.length}</span><span class="hist-stat-lbl">WC Appearances</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${stars}</span><span class="hist-stat-lbl">Titles ★</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${totalMatches}</span><span class="hist-stat-lbl">Total Matches</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${totalGoals}</span><span class="hist-stat-lbl">Total Goals</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${totalWins}</span><span class="hist-stat-lbl">Wins</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${totalDraws}</span><span class="hist-stat-lbl">Draws</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${totalLosses}</span><span class="hist-stat-lbl">Losses</span></div>
+            <div class="hist-stat-box"><span class="hist-stat-val">${totalCards}</span><span class="hist-stat-lbl">Cards</span></div>
+        </div>`;
+
+    // Build top scorers
+    const topScorerList = Object.entries(topScorers).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([name, goals], i) => {
+        return `<div class="lb-row" onclick="window.__lbClickPlayer('${esc(name)}', [])" style="cursor:pointer;">
+            <span class="lb-rank">${i + 1}</span>
+            <span class="lb-name">👤 ${name}</span>
+            <span class="lb-value">${goals} ⚽</span>
+        </div>`;
+    }).join('');
+
+    const topScorersHtml = topScorerList ? `
+        <h3 style="color:#FFD700; margin:14px 0 8px;">Top Scorers (All-Time)</h3>
+        <div class="lb-list">${topScorerList}</div>` : '';
+
+    // Build year-by-year match history
+    const stageMap = { 'r16': 'R16', 'qf': 'QF', 'sf': 'SF', 'final': 'Final', '3rd': '3rd', 'group': 'Group', 'round_of_16': 'R16', 'quarter_final': 'QF', 'semi_final': 'SF', 'third_place': '3rd' };
+
+    const yearsHtml = yearData.map(yd => {
+        const isChampion = yd.finalPosition === 1;
+        const yearHeader = isChampion
+            ? `<h3 style="color:#FFD700; margin:14px 0 6px;">${yd.year} — Champion 🏆</h3>`
+            : `<h3 style="color:#ccc; margin:14px 0 6px;">${yd.year} — ${yd.success}</h3>`;
+
+        const matchesHtml = yd.matches.map(m => {
+            const matchId = m.id || `${m.homeTeam}-${m.awayTeam}-${m.date}`;
+            const dateStr = m.date ? new Date(m.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+            const stageLabel = stageMap[m.stage] || stageMap[m.stageRaw] || (m.stage || '').replace(/_/g, ' ');
+            return `
+                <div class="hist-match-card" onclick="lbNavPush('window.__lbClickTeam(&quot;${esc(teamName)}&quot;)'); window.__lbShowMatch(${yd.year}, '${esc(m.homeTeam)}', '${esc(m.awayTeam)}', '${esc(teamName)}')">
+                    <span class="mc-date">${dateStr}</span>
+                    <div class="mc-teams">
+                        <span class="mc-team">${flagImg(m.homeTeam)} ${m.homeTeam || ''}</span>
+                        <span class="mc-score">${m.homeScore != null ? m.homeScore : '-'}-${m.awayScore != null ? m.awayScore : '-'}</span>
+                        <span class="mc-team">${flagImg(m.awayTeam)} ${m.awayTeam || ''}</span>
+                    </div>
+                    <span class="mc-stage">${stageLabel}</span>
+                </div>`;
+        }).join('');
+
+        return `${yearHeader}<div class="hist-match-grid">${matchesHtml}</div>`;
+    }).join('');
+
+    // Title flag
+    const teamData = globalSearchIndex.teams[teamName];
+    const titleFlag = teamData && teamData.data ? flagImg(teamName) : '';
+
+    body.innerHTML = `
+        <div style="text-align:center; margin-bottom:16px;">
+            <div style="font-size:1.4rem; font-weight:700; color:#FFD700; margin-bottom:4px;">${titleFlag} ${teamName}</div>
+            <div style="margin:6px 0;">${starsHtml}</div>
+        </div>
+        ${backBtn}
+        ${statsHtml}
+        ${topScorersHtml}
+        <h3 style="color:#FFD700; margin:16px 0 8px;">Tournament History</h3>
+        ${yearsHtml}
+    `;
+    body.scrollTop = 0;
+};
+
+// Show a match inside the leaderboard (from team history click)
+// viewTeam = the team being viewed (for the back button, regardless of home/away)
+window.__lbShowMatch = async function(matchYear, homeTeam, awayTeam, viewTeam, fromTab) {
+    // Push current view onto nav stack (if fromTab provided, this is a fresh entry from a chart)
+    if (fromTab) {
+        lbNavClear();
+        lbNavPush(`renderLeaderboardTab('${fromTab}')`);
+    }
+    // Switch year if needed
+    if (parseInt(matchYear, 10) !== parseInt(histLookups.currentYear, 10)) {
+        const yearOpt = Array.from(document.querySelectorAll('.year-option')).find(el => parseInt(el.dataset.year, 10) === parseInt(matchYear, 10));
+        if (yearOpt) {
+            currentYearIndex = parseInt(yearOpt.dataset.index, 10);
+            selectedYear = parseInt(matchYear, 10);
+            updateFisheyeUI();
+            filterAndDraw();
+            try { await loadHistoricalData(matchYear); } catch (e) { console.warn(e.message); }
+            filterAndDraw();
+            updateChampionStars(matchYear);
+        }
+    }
+
+    const all = histLookups.allMatches || [];
+    const match = all.find(m =>
+        (m.homeTeam === homeTeam && m.awayTeam === awayTeam) ||
+        (m.homeTeam === awayTeam && m.awayTeam === homeTeam)
+    );
+    if (!match) { console.warn('Match not found:', homeTeam, awayTeam, matchYear); return; }
+
+    const storedMatchId = match.id || `${match.homeTeam}-${match.awayTeam}-${match.date}`;
+    const { match: m } = findMatchById(storedMatchId);
+    if (!m) return;
+
+    const matchBody = buildMatchBody(m, { context: getActiveContext(), matchId: storedMatchId });
+    // Store rebuild expression so __navHandler can push it before navigating deeper
+    lbCurrentMatchRebuild = `window.__lbShowMatch(${matchYear}, '${esc(homeTeam)}', '${esc(awayTeam)}', '${esc(viewTeam || homeTeam)}')`;
+    // Back button uses nav stack — works regardless of how deep we are
+    const backBtn = `<div class="lb-tab" onclick="lbNavBack()" style="margin-bottom:12px; cursor:pointer;">← Back</div>`;
+    const body = getActiveProfileBody();
+    if (body) {
+        body.innerHTML = `<h2 style="color:#FFD700; margin:0 0 12px; font-size:1.2rem;">⚽ ${m.homeTeam} vs ${m.awayTeam}</h2>${backBtn}${matchBody}`;
+        body.scrollTop = 0;
+    }
+};
+
+window.__lbClickStadium = async function(stadiumName, fromTab, targetBody) {
+    await ensureCrossYearIndex();
+    const matches = crossYearIndex.stadiums[stadiumName] || [];
+    const html = buildStadiumProfileHtml(stadiumName, matches, 'leaderboard');
+
+    const body = targetBody || getActiveProfileBody();
+    if (!body) return;
+    // Push current view onto nav stack so back button can return here
+    if (fromTab) {
+        lbNavClear();
+        lbNavPush(`renderLeaderboardTab('${fromTab}')`);
+    }
+    const backBtn = `<div class="lb-tab" onclick="lbNavBack()" style="margin-bottom:12px; cursor:pointer;">← Back</div>`;
+    body.innerHTML = `<h2 style="color:#FFD700; margin:0 0 12px; font-size:1.2rem;">🏟️ ${stadiumName}</h2>${backBtn}${html}`;
+    body.scrollTop = 0;
+};
+
+window.__lbClickRef = async function(refName, fromTab, targetBody) {
+    await ensureCrossYearIndex();
+    const matches = crossYearIndex.refs[refName] || [];
+    const html = buildRefProfileHtml(refName, matches, 'leaderboard');
+
+    const body = targetBody || getActiveProfileBody();
+    if (!body) return;
+    // Push current view onto nav stack so back button can return here
+    if (fromTab) {
+        lbNavClear();
+        lbNavPush(`renderLeaderboardTab('${fromTab}')`);
+    }
+    const backBtn = `<div class="lb-tab" onclick="lbNavBack()" style="margin-bottom:12px; cursor:pointer;">← Back</div>`;
+    body.innerHTML = `<h2 style="color:#FFD700; margin:0 0 12px; font-size:1.2rem;">👤 ${refName}</h2>${backBtn}${html}`;
+    body.scrollTop = 0;
+};
+
+// Rule 1: Update overlay padding to track icon position (FLOOR)
+// Also computes --overlay-ceiling (top boundary) based on timeline pinned state.
+// Both variables are used by search/compare result panels to fill the
+// available vertical space (ceiling logic).
+function updateOverlayFloor() {
+    // Icons sit at bottom: 75px (no year) or bottom: 175px (year active)
+    // Check if any icon has year-active class
+    const lbBtn = document.getElementById('leaderboard-btn');
+    const yearActive = lbBtn && lbBtn.classList.contains('year-active');
+    const iconBottom = yearActive ? 175 : 75;
+    const floor = iconBottom + 36 + 8; // icon bottom + icon height + gap
+    document.documentElement.style.setProperty('--overlay-floor', floor + 'px');
+
+    // CEILING: 0px (no timeline pinned) or 98px (timeline pinned)
+    const timeline = document.getElementById('timeline-wrapper');
+    const ceiling = (timeline && timeline.classList.contains('pinned')) ? 98 : 0;
+    document.documentElement.style.setProperty('--overlay-ceiling', ceiling + 'px');
+
+    // Also update leaderboard card bottom (profile-card uses CSS calc with --overlay-floor + --overlay-ceiling, no JS needed)
+    const lbCard = document.querySelector('.leaderboard-card');
+    if (lbCard) lbCard.style.bottom = floor + 'px';
+}
+
+// Call on init and when year changes
+updateOverlayFloor();
+
+async function openLeaderboard() {
+    const overlay = document.getElementById('leaderboard-overlay');
+    const body = document.getElementById('leaderboard-body');
+    if (!overlay || !body) return;
+
+    body.innerHTML = '<p style="text-align:center; padding:40px; color:#888;">Loading all-time stats...</p>';
+    overlay.classList.add('visible');
+
+    await buildLeaderboardData();
+    renderLeaderboardTab('titles');
+}
+
+function closeLeaderboard() {
+    const overlay = document.getElementById('leaderboard-overlay');
+    if (overlay) overlay.classList.remove('visible');
+}
+
+// Close the profile overlay (separate from leaderboard card)
+function closeProfile() {
+    const overlay = document.getElementById('profile-overlay');
+    if (overlay) overlay.classList.remove('visible');
+}
+
+// Helper: returns the active body element for profile rendering.
+// If #profile-overlay is open, returns #profile-body; otherwise returns #leaderboard-body.
+// This is used by __lbShowMatch*, __lbSwitchYearForPlayer, __navHandler, etc. so that
+// in-profile navigation (match clicks, back buttons, year switches) stays inside the
+// profile card instead of jumping back to the leaderboard card.
+function getActiveProfileBody() {
+    const profileOverlay = document.getElementById('profile-overlay');
+    if (profileOverlay && profileOverlay.classList.contains('visible')) return document.getElementById('profile-body');
+    const standingsOverlay = document.getElementById('standings-overlay');
+    if (standingsOverlay && standingsOverlay.classList.contains('visible')) return document.getElementById('standings-body');
+    return document.getElementById('leaderboard-body');
+}
+
+// Helper: returns 'profile', 'standings', or 'leaderboard'.
+function getActiveContext() {
+    const profileOverlay = document.getElementById('profile-overlay');
+    if (profileOverlay && profileOverlay.classList.contains('visible')) return 'profile';
+    const standingsOverlay = document.getElementById('standings-overlay');
+    if (standingsOverlay && standingsOverlay.classList.contains('visible')) return 'standings';
+    return 'leaderboard';
+}
+
+// ==========================================
+// LEADERBOARD NAVIGATION STACK (v160: unified with navStack)
+// ==========================================
+// v160: The leaderboard nav stack is now MERGED with the unified navStack (defined
+// earlier in the file). The lbNavPush/lbNavBack/lbNavClear functions below are
+// thin shims that delegate to the unified stack. This ensures that back-button
+// navigation works seamlessly across leaderboard, profile, popup, bracket, and
+// standings contexts — all sharing a single stack.
+//
+// Previously, leaderboard navigation used a separate `lbNavStack` (string expressions)
+// while popup/bracket/standings used `navStack` (structured entries). They went out
+// of sync, causing "back button jumps to starting point" bugs. Now there's only one stack.
+
+// Push a "return to" entry onto the unified stack. expr is a JS expression string.
+// v160: We wrap the expression in a structured entry so it can coexist with
+// popup/bracket/standings entries. The type 'lbexpr' is handled specially by navBack.
+function lbNavPush(expr) {
+    if (typeof expr !== 'string' || expr.length === 0) return;
+    navStack.push({ type: 'lbexpr', year: parseInt(histLookups.currentYear, 10) || 0, context: 'leaderboard', data: { expr }, label: 'Back' });
+}
+
+// Pop the top entry and execute it (go back one level).
+// v160: Delegates to the unified __navBack() so the restoring flag is set correctly
+// and the year-switch logic runs if needed.
+function lbNavBack() {
+    if (navStack.length === 0) return false;
+    // If the top entry is an lbexpr, eval it directly (preserving v157 behavior).
+    // Otherwise, delegate to __navBack which handles structured entries.
+    const top = navStack[navStack.length - 1];
+    if (top.type === 'lbexpr') {
+        navStack.pop();
+        const wasRestoring = window.__navRestoring;
+        window.__navRestoring = true;
+        try { (0, eval)(top.data.expr); }
+        catch (e) { console.warn('lbNavBack error:', e.message, 'expr:', top.data.expr); }
+        finally { window.__navRestoring = wasRestoring; }
+        return true;
+    }
+    // Delegate to the unified navBack
+    window.__navBack();
+    return true;
+}
+
+// Clear the stack (e.g., when leaderboard is closed or a new tab is selected)
+function lbNavClear() {
+    navStack = [];
+}
+
+// Global: stores the rebuild expression for the currently-displayed match view.
+// Set by __lbShowMatch / __lbShowMatchForPlayer / __lbShowMatchForRef / __lbShowMatchForStadium
+// so that __navHandler can push it onto the stack before navigating to a player/team/ref/stadium.
+let lbCurrentMatchRebuild = null;
+
+// ==========================================
+// GLOBAL SEARCH BAR (Phase 3.4)
+// ==========================================
+// Standalone search overlay — searches across ALL loaded data
+// (players, teams, stadiums, refs from ALL years via crossYearIndex).
+// Works WITHOUT a year filter being applied.
+
+// Global index built from all year data — populated by ensureCrossYearIndex
+let globalSearchIndex = { players: {}, teams: {}, stadiums: {}, refs: {} };
+
+// Build the global search index from all loaded FWCD data
+function buildGlobalSearchIndex() {
+    globalSearchIndex = { players: {}, teams: {}, stadiums: {}, refs: {} };
+
+    for (const year of getCrossYearSources()) {
+        const varName = `FWCD_${year}`;
+        if (!window[varName]) continue;
+        const data = window[varName];
+
+        // Index players — keep ALL years (store as array), use most recent as primary
+        if (Array.isArray(data.players_FULL)) {
+            data.players_FULL.forEach(p => {
+                if (p.name) {
+                    if (!globalSearchIndex.players[p.name]) {
+                        globalSearchIndex.players[p.name] = { name: p.name, type: 'player', year, data: p, years: [year] };
+                    } else {
+                        globalSearchIndex.players[p.name].years.push(year);
+                        if (year > globalSearchIndex.players[p.name].year) {
+                            globalSearchIndex.players[p.name].year = year;
+                            globalSearchIndex.players[p.name].data = p;
+                        }
+                    }
+                }
+            });
+        }
+        // Index teams — keep most recent year's data
+        if (Array.isArray(data.teams_summary)) {
+            data.teams_summary.forEach(t => {
+                if (t.name) {
+                    if (!globalSearchIndex.teams[t.name]) {
+                        globalSearchIndex.teams[t.name] = { name: t.name, type: 'team', year, data: t };
+                    } else if (year > globalSearchIndex.teams[t.name].year) {
+                        globalSearchIndex.teams[t.name].year = year;
+                        globalSearchIndex.teams[t.name].data = t;
+                    }
+                }
+            });
+        }
+    }
+    // Index stadiums and refs from crossYearIndex
+    Object.assign(globalSearchIndex.stadiums, crossYearIndex.stadiums);
+    Object.assign(globalSearchIndex.refs, crossYearIndex.refs);
+
+    console.log(`🔍 Global search index: ${Object.keys(globalSearchIndex.players).length} players, ${Object.keys(globalSearchIndex.teams).length} teams, ${Object.keys(globalSearchIndex.stadiums).length} stadiums, ${Object.keys(globalSearchIndex.refs).length} refs`);
+}
+
+async function performGlobalSearch(query) {
+    const resultsEl = document.getElementById('search-overlay-results');
+    if (!resultsEl) return;
+
+    if (!query || query.length < 2) {
+        resultsEl.innerHTML = '';
+        resultsEl.style.display = 'none';
+        return;
+    }
+
+    // Ensure data is loaded
+    if (!crossYearIndex.loaded) {
+        resultsEl.style.display = '';
+        resultsEl.innerHTML = '<div class="gs-result" style="color:#888;">Loading all-year data...</div>';
+        await ensureCrossYearIndex();
+        buildGlobalSearchIndex();
+    }
+
+    const q = query.toLowerCase();
+    const results = [];
+
+    // Search players (all years) — show all years the player appeared in
+    Object.values(globalSearchIndex.players).forEach(p => {
+        if (p.name.toLowerCase().includes(q)) {
+            const team = p.data.current_team_context || '';
+            const yearsStr = p.years ? p.years.join(', ') : p.year;
+            results.push({ type: 'player', name: p.name, icon: '👤', year: yearsStr, team });
+        }
+    });
+
+    // Search teams (all years)
+    Object.values(globalSearchIndex.teams).forEach(t => {
+        if (t.name.toLowerCase().includes(q)) {
+            results.push({ type: 'team', name: t.name, icon: '🏳️', year: t.year });
+        }
+    });
+
+    // Search stadiums (all years)
+    Object.keys(globalSearchIndex.stadiums).forEach(name => {
+        if (name.toLowerCase().includes(q)) {
+            const years = [...new Set(globalSearchIndex.stadiums[name].map(m => m.year))].sort();
+            results.push({ type: 'stadium', name, icon: '🏟️', year: years.join(',') });
+        }
+    });
+
+    // Search refs (all years)
+    Object.keys(globalSearchIndex.refs).forEach(name => {
+        if (name.toLowerCase().includes(q)) {
+            const years = [...new Set(globalSearchIndex.refs[name].map(m => m.year))].sort();
+            results.push({ type: 'ref', name, icon: '👔', year: years.join(',') });
+        }
+    });
+
+    // Search years (if query matches a year number)
+    const qNum = parseInt(q);
+    if (!isNaN(qNum) && qNum >= 1930 && qNum <= 2100) {
+        getCrossYearSources().forEach(yr => {
+            if (yr === qNum || String(yr).includes(q)) {
+                results.push({ type: 'year', name: String(yr), icon: '🏆', year: String(yr) });
+            }
+        });
+    }
+
+    // Limit to 50 results
+    const limited = results.slice(0, 50);
+
+    if (limited.length === 0) {
+        resultsEl.style.display = '';
+        resultsEl.innerHTML = '<div class="gs-result" style="color:#888;">No results found.</div>';
+        return;
+    }
+
+    resultsEl.style.display = '';
+    resultsEl.innerHTML = limited.map(r => {
+        const yearStr = r.year ? `'${r.year}'` : 'null';
+        return `<div class="gs-result" onclick="window.__gsClick('${r.type}', '${esc(r.name)}', ${yearStr})">
+            ${r.icon} ${r.name}
+            <span class="gs-type">${r.type}</span>
+            <span class="gs-year">${r.year || ''}</span>
+        </div>`;
+    }).join('');
+}
+
+async function openSearch() {
+    const overlay = document.getElementById('search-overlay');
+    if (!overlay) return;
+    overlay.classList.add('visible');
+    const input = document.getElementById('search-overlay-input');
+    if (input) { input.value = ''; input.focus(); }
+    const resultsEl = document.getElementById('search-overlay-results');
+    resultsEl.innerHTML = '';
+    resultsEl.style.display = 'none';
+
+    // Pre-load data so first search is instant
+    if (!crossYearIndex.loaded) {
+        await ensureCrossYearIndex();
+        buildGlobalSearchIndex();
+    } else if (Object.keys(globalSearchIndex.players).length === 0) {
+        buildGlobalSearchIndex();
+    }
+
+    resultsEl.innerHTML = '';
+    resultsEl.style.display = 'none';
+}
+
+function closeSearch() {
+    const overlay = document.getElementById('search-overlay');
+    if (overlay) overlay.classList.remove('visible');
+}
+
+// Handle search result click — opens profile in a SEPARATE profile overlay
+// (NOT the leaderboard card) so the title and styling can differ.
+window.__gsClick = async function(type, name, year) {
+    closeSearch();
+
+    // Open the PROFILE overlay (separate from leaderboard card)
+    const overlay = document.getElementById('profile-overlay');
+    const body = document.getElementById('profile-body');
+    const title = document.getElementById('profile-title');
+    if (!overlay || !body) return;
+    overlay.classList.add('visible');
+    body.innerHTML = '<p style="color:#888; text-align:center; padding:40px;">Loading...</p>';
+
+    // Set the profile title based on type
+    const titleIcons = { player: '👤', team: '🏳️', stadium: '🏟️', ref: '👔' };
+    if (title) title.textContent = `${titleIcons[type] || '🔍'} ${name}`;
+
+    // Ensure data is loaded
+    if (!crossYearIndex.loaded) {
+        await ensureCrossYearIndex();
+        buildGlobalSearchIndex();
+    }
+
+    // For players: find the most recent year they appear in
+    // For teams: use the leaderboard team view (aggregated across all years)
+    // For stadiums/refs: use the leaderboard stadium/ref view
+    if (type === 'player') {
+        // Find the player's most recent year from global index
+        let playerYear = year;
+        if (!playerYear && globalSearchIndex.players[name]) {
+            playerYear = globalSearchIndex.players[name].year;
+        }
+        // Switch to that year if needed
+        if (playerYear && parseInt(playerYear, 10) !== parseInt(histLookups.currentYear, 10)) {
+            const yearOpt = Array.from(document.querySelectorAll('.year-option')).find(el => parseInt(el.dataset.year, 10) === parseInt(playerYear, 10));
+            if (yearOpt) {
+                currentYearIndex = parseInt(yearOpt.dataset.index, 10);
+                selectedYear = parseInt(playerYear, 10);
+                updateFisheyeUI();
+                filterAndDraw();
+                try { await loadHistoricalData(playerYear); } catch (e) { console.warn(e.message); }
+                filterAndDraw();
+                updateChampionStars(playerYear);
+            }
+        }
+
+        // Build aggregated player profile across all years — render into profile-body
+        await buildPlayerLeaderboardProfile(name, body);
+    } else if (type === 'team') {
+        // Use the leaderboard aggregated team view — render into profile-body
+        await window.__lbClickTeam(name, null, body);
+    } else if (type === 'stadium') {
+        // Use the leaderboard stadium view — render into profile-body
+        await window.__lbClickStadium(name, null, body);
+    } else if (type === 'ref') {
+        // Use the leaderboard ref view — render into profile-body
+        await window.__lbClickRef(name, null, body);
+    } else if (type === 'year') {
+        // Year summary — render into profile-body
+        await buildYearSummary(parseInt(name, 10), body, null);
+    }
+    body.scrollTop = 0;
+};
+
+// ==========================================
+// HEAD-TO-HEAD COMPARISON (Phase 3.2)
+// ==========================================
+
+// compareState is defined in the multi-entity comparison section below
+
+// Build searchable index of all players and teams (from global search index)
+function getSearchableEntities() {
+    const entities = [];
+    // Add players from global index (all years)
+    Object.values(globalSearchIndex.players).forEach(p => {
+        entities.push({ type: 'player', name: p.name, data: p.data });
+    });
+    // Add teams from global index (all years)
+    Object.values(globalSearchIndex.teams).forEach(t => {
+        entities.push({ type: 'team', name: t.name, data: t.data });
+    });
+    // Add stadiums from cross-year index
+    Object.keys(crossYearIndex.stadiums).forEach(name => {
+        entities.push({ type: 'stadium', name, data: { matches: crossYearIndex.stadiums[name] } });
+    });
+    // Add refs from cross-year index
+    Object.keys(crossYearIndex.refs).forEach(name => {
+        entities.push({ type: 'ref', name, data: { matches: crossYearIndex.refs[name] } });
+    });
+    return entities;
+}
+
+function searchEntities(query) {
+    if (!query || query.length < 2) return [];
+    const entities = getSearchableEntities();
+    const q = query.toLowerCase();
+    return entities.filter(e => e.name.toLowerCase().includes(q)).slice(0, 10);
+}
+
+// ===== Multi-entity comparison (up to 4) =====
+let compareState = { entities: [], maxSlots: 4 };
+
+function renderCompareSlots() {
+    const row = document.getElementById('compare-search-row');
+    if (!row) return;
+    let html = '';
+    for (let i = 0; i < compareState.entities.length; i++) {
+        const e = compareState.entities[i];
+        html += '<div class="compare-search">';
+        html += `<input type="text" id="compare-search-${i}" placeholder="Search players or teams to compare..." autocomplete="off" value="${e ? esc(e.name) : ''}">`;
+        html += `<div class="compare-results" id="compare-results-${i}"></div>`;
+        if (compareState.entities.length > 2) {
+            html += `<button class="compare-remove-btn" onclick="removeCompareSlot(${i})">✕ Remove</button>`;
+        }
+        html += '</div>';
+        if (i < compareState.entities.length - 1) html += '<div class="compare-vs">VS</div>';
+    }
+    if (compareState.entities.length < compareState.maxSlots) {
+        html += `<button class="compare-add-btn" onclick="addCompareSlot()">+</button>`;
+    }
+    row.innerHTML = html;
+    for (let i = 0; i < compareState.entities.length; i++) {
+        const input = document.getElementById(`compare-search-${i}`);
+        if (input) input.addEventListener('input', (e) => renderCompareResults(i, e.target.value));
+    }
+}
+
+function addCompareSlot() {
+    if (compareState.entities.length >= compareState.maxSlots) return;
+    compareState.entities.push(null);
+    renderCompareSlots();
+    const newInput = document.getElementById(`compare-search-${compareState.entities.length - 1}`);
+    if (newInput) newInput.focus();
+}
+
+function removeCompareSlot(idx) {
+    if (compareState.entities.length <= 2) return;
+    compareState.entities.splice(idx, 1);
+    renderCompareSlots();
+    renderComparison();
+}
+
+function renderCompareResults(slot, query) {
+    const resultsEl = document.getElementById(`compare-results-${slot}`);
+    if (!resultsEl) return;
+    const results = searchEntities(query);
+    resultsEl.innerHTML = results.map(e => {
+        const icons = { player: '👤', team: '🏳️', stadium: '🏟️', ref: '👔' };
+        const icon = icons[e.type] || '❓';
+        const extra = e.type === 'player' && e.data.current_team_context ? ` (${e.data.current_team_context})` : '';
+        return `<div class="compare-result" onclick="selectCompareEntity(${slot}, '${esc(e.name)}', '${e.type}')">${icon} ${e.name}${extra}</div>`;
+    }).join('');
+}
+
+function selectCompareEntity(slot, name, type) {
+    const searchInput = document.getElementById(`compare-search-${slot}`);
+    const resultsEl = document.getElementById(`compare-results-${slot}`);
+    if (searchInput) searchInput.value = name;
+    if (resultsEl) resultsEl.innerHTML = '';
+    let data;
+    if (type === 'player') data = aggregatePlayerAcrossYears(name);
+    else if (type === 'team') data = aggregateTeamAcrossYears(name);
+    else if (type === 'stadium') data = aggregateStadiumAcrossYears(name);
+    else if (type === 'ref') data = aggregateRefAcrossYears(name);
+    compareState.entities[slot] = { name, type, data };
+    renderComparison();
+}
+
+// Aggregate stadium data across all years
+function aggregateStadiumAcrossYears(stadiumName) {
+    const matches = crossYearIndex.stadiums[stadiumName] || [];
+    let totalGoals = 0, totalCards = 0;
+    const years = new Set();
+    let details = null; // stadiumFullDetails from first match that has it
+
+    matches.forEach(m => {
+        years.add(m.year);
+        totalGoals += (m.homeScore || 0) + (m.awayScore || 0);
+        const varName = `FWCD_${m.year}`;
+        if (window[varName] && window[varName].matches_FULL) {
+            const fm = window[varName].matches_FULL.find(fm =>
+                (fm.homeTeam === m.homeTeam && fm.awayTeam === m.awayTeam) ||
+                (fm.homeTeam === m.awayTeam && fm.awayTeam === m.homeTeam)
+            );
+            if (fm && fm.cards) totalCards += fm.cards.length;
+            if (!details && fm) {
+                const sd = fm.stadiumFullDetails || fm.stadiumFULLDetails;
+                if (sd) details = sd;
+            }
+        }
+    });
+
+    return {
+        name: stadiumName,
+        totalMatches: matches.length,
+        totalYears: years.size,
+        totalGoals,
+        totalCards,
+        city: details ? details.city : 'N/A',
+        country: details ? details.country : 'N/A',
+        capacity: details ? details.capacity : null,
+        opened: details ? details.opened : null,
+        isOpenAir: details ? details.isOpenAir : null,
+        elevation: details ? details.elevationM : null
+    };
+}
+
+// Aggregate ref data across all years
+function aggregateRefAcrossYears(refName) {
+    const matches = crossYearIndex.refs[refName] || [];
+    let totalGoals = 0, totalYellow = 0, totalRed = 0;
+    const years = new Set();
+
+    matches.forEach(m => {
+        years.add(m.year);
+        totalGoals += (m.homeScore || 0) + (m.awayScore || 0);
+        const varName = `FWCD_${m.year}`;
+        if (window[varName] && window[varName].matches_FULL) {
+            const fm = window[varName].matches_FULL.find(fm =>
+                (fm.homeTeam === m.homeTeam && fm.awayTeam === m.awayTeam) ||
+                (fm.homeTeam === m.awayTeam && fm.awayTeam === m.homeTeam)
+            );
+            if (fm && fm.cards) {
+                totalYellow += fm.cards.filter(c => c.color === 'yellow').length;
+                totalRed += fm.cards.filter(c => c.color === 'red').length;
+            }
+        }
+    });
+
+    return { name: refName, totalMatches: matches.length, totalYears: years.size, totalGoals, totalYellow, totalRed };
+}
+
+// Aggregate a player's data across all World Cups
+function aggregatePlayerAcrossYears(playerName) {
+    const result = {
+        name: playerName,
+        position: '',
+        ageAtTournament: null,
+        goals: 0,
+        caps: null,
+        nationalGoals: null,
+        tournamentCount: 0,
+        totalGoals: 0,
+        identity: {},
+        current_team_context: '',
+        appearances: []
+    };
+
+    for (const year of getCrossYearSources()) {
+        const varName = `FWCD_${year}`;
+        if (!window[varName]) continue;
+        const data = window[varName];
+        const p = data.players_FULL && data.players_FULL.find(p => p.name === playerName);
+        if (!p) continue;
+
+        result.tournamentCount++;
+        result.goals += p.goals || 0;
+        result.totalGoals += p.totalGoals || p.goals || 0;
+        if (!result.position) result.position = p.position;
+        if (!result.current_team_context) result.current_team_context = p.current_team_context || '';
+        if (result.caps === null && p.caps != null) result.caps = p.caps;
+        if (result.nationalGoals === null && p.nationalGoals != null) result.nationalGoals = p.nationalGoals;
+        if (!result.identity.heightCm && p.identity) result.identity = p.identity;
+        result.appearances.push({ year, goals: p.goals || 0, jersey: p.jersey, captain: p.captain });
+    }
+    return result;
+}
+
+// Aggregate a team's data across all World Cups
+function aggregateTeamAcrossYears(teamName) {
+    const result = {
+        name: teamName,
+        finalPosition: null,
+        groupStage: { pts: 0, won: 0, drawn: 0, lost: 0, gf: 0, ga: 0 },
+        confederation: '',
+        knockoutPath: [],
+        appearances: 0,
+        totalGoalsScored: 0,
+        totalGoalsConceded: 0,
+        totalWins: 0,
+        totalDraws: 0,
+        totalLosses: 0
+    };
+
+    let bestPosition = 99;
+    for (const year of getCrossYearSources()) {
+        const varName = `FWCD_${year}`;
+        if (!window[varName]) continue;
+        const data = window[varName];
+        const t = data.teams_summary && data.teams_summary.find(t => t.name === teamName);
+        if (!t) continue;
+
+        result.appearances++;
+        if (t.finalPosition && t.finalPosition < bestPosition) {
+            bestPosition = t.finalPosition;
+            result.finalPosition = t.finalPosition;
+        }
+        if (!result.confederation) result.confederation = t.confederation || '';
+        const gs = t.groupStage || {};
+        result.groupStage.pts += gs.pts || 0;
+        result.groupStage.won += gs.won || 0;
+        result.groupStage.drawn += gs.drawn || 0;
+        result.groupStage.lost += gs.lost || 0;
+        result.groupStage.gf += gs.gf || 0;
+        result.groupStage.ga += gs.ga || 0;
+
+        // Aggregate match-level stats (handles name aliases)
+        const yrMatches = (data.matches_FULL || []).filter(m => matchInvolvesTeam(m, teamName));
+        yrMatches.forEach(m => {
+            const homeTeam = m.homeTeam || m.home || '';
+            const alias = TEAM_NAME_ALIASES[teamName];
+            const isHome = homeTeam === teamName || (alias && homeTeam === alias);
+            const scored = isHome ? (m.homeScore || 0) : (m.awayScore || 0);
+            const conceded = isHome ? (m.awayScore || 0) : (m.homeScore || 0);
+            result.totalGoalsScored += scored;
+            result.totalGoalsConceded += conceded;
+            if (scored > conceded) result.totalWins++;
+            else if (scored < conceded) result.totalLosses++;
+            else result.totalDraws++;
+        });
+    }
+    return result;
+}
+
+function renderComparison() {
+    const display = document.getElementById('compare-display');
+    const filled = compareState.entities.filter(e => e !== null);
+    if (filled.length < 2) {
+        // Hide the display panel entirely when there's nothing to compare
+        display.innerHTML = '';
+        display.style.display = 'none';
+        return;
+    }
+    // Show the display panel
+    display.style.display = '';
+    const types = new Set(filled.map(e => e.type));
+    if (types.size > 1) {
+        display.innerHTML = '<p style="color:#888; text-align:center; padding:20px;">Please select entities of the same type.</p>';
+        return;
+    }
+    const type = filled[0].type;
+    const n = filled.length;
+    const gridCols = `repeat(${n}, 1fr)`;
+    let stats = [];
+    if (type === 'player') {
+        const p = filled.map(e => e.data);
+        const ids = p.map(d => d.identity || {});
+        stats = [
+            { label: 'WC Goals', vals: p.map(d => d.goals || 0), higher: true },
+            { label: 'Total WC Goals', vals: p.map((d, i) => d.totalGoals ?? ids[i].careerGoals ?? 'N/A'), higher: true },
+            { label: 'WC Tournaments', vals: p.map(d => d.tournamentCount || (d.appearances ? d.appearances.length : 0)), higher: true },
+            { label: 'Caps', vals: p.map(d => d.caps ?? 'N/A'), higher: true },
+            { label: 'National Goals', vals: p.map(d => d.nationalGoals ?? 'N/A'), higher: true },
+            { label: 'Position', vals: p.map(d => d.position || 'N/A') },
+            { label: 'Age at WC', vals: p.map(d => d.ageAtTournament ?? 'N/A') },
+            { label: 'Height', vals: p.map((d, i) => ids[i].heightCm ? ids[i].heightCm + 'cm' : 'N/A') },
+        ];
+    } else if (type === 'team') {
+        const t = filled.map(e => e.data);
+        const getStars = (name) => {
+            if (typeof fifaWorldCupParticipants === 'undefined') return 0;
+            let maxStars = 0;
+            fifaWorldCupParticipants.forEach(p => { if (p.name === name && p.Success === 'Champion' && p.Star) { const s = parseInt(p.Star, 10); if (s > maxStars) maxStars = s; } });
+            return maxStars;
+        };
+        stats = [
+            { label: 'Titles', vals: filled.map(e => getStars(e.name)), higher: true, special: 'stars' },
+            { label: 'WC Appearances', vals: t.map(d => d.appearances), higher: true },
+            { label: 'Total Wins', vals: t.map(d => d.totalWins), higher: true },
+            { label: 'Goals Scored', vals: t.map(d => d.totalGoalsScored), higher: true },
+            { label: 'Goal Difference', vals: t.map(d => d.totalGoalsScored - d.totalGoalsConceded), higher: true },
+            { label: 'Total Draws', vals: t.map(d => d.totalDraws), higher: true },
+            { label: 'Goals Conceded', vals: t.map(d => d.totalGoalsConceded), higher: false },
+            { label: 'Total Losses', vals: t.map(d => d.totalLosses), higher: false },
+            { label: 'Confederation', vals: t.map(d => d.confederation || 'N/A') },
+        ];
+    } else if (type === 'stadium') {
+        const s = filled.map(e => e.data);
+        stats = [
+            { label: 'Total Matches', vals: s.map(d => d.totalMatches), higher: true },
+            { label: 'World Cups', vals: s.map(d => d.totalYears), higher: true },
+            { label: 'Total Goals', vals: s.map(d => d.totalGoals), higher: true },
+            { label: 'Capacity', vals: s.map(d => d.capacity ? d.capacity.toLocaleString() : 'N/A'), higher: true },
+            { label: 'Total Cards', vals: s.map(d => d.totalCards), higher: true },
+            { label: 'Elevation', vals: s.map(d => d.elevation != null ? d.elevation + 'm' : 'N/A'), higher: true },
+            { label: 'City', vals: s.map(d => d.city || 'N/A') },
+            { label: 'Country', vals: s.map(d => d.country || 'N/A') },
+            { label: 'Opened', vals: s.map(d => d.opened || 'N/A'), higher: false },
+            { label: 'Type', vals: s.map(d => d.isOpenAir === true ? 'Open Air' : d.isOpenAir === false ? 'Roof' : 'N/A') },
+        ];
+    } else if (type === 'ref') {
+        const r = filled.map(e => e.data);
+        stats = [
+            { label: 'Total Matches', vals: r.map(d => d.totalMatches), higher: true },
+            { label: 'World Cups', vals: r.map(d => d.totalYears), higher: true },
+            { label: 'Total Goals', vals: r.map(d => d.totalGoals), higher: true },
+            { label: 'Yellow Cards', vals: r.map(d => d.totalYellow), higher: true },
+            { label: 'Red Cards', vals: r.map(d => d.totalRed), higher: true },
+        ];
+    }
+    let headerHtml = `<div style="display:grid; grid-template-columns:${gridCols}; gap:0; margin-bottom:12px;">`;
+    filled.forEach(e => {
+        const flag = type === 'player' ? flagImg(e.data.current_team_context || '') : (type === 'team' ? flagImg(e.name) : '');
+        headerHtml += `<div class="compare-name">${flag} ${e.name}</div>`;
+    });
+    headerHtml += '</div>';
+    let rowsHtml = '';
+    stats.forEach(s => {
+        const isNum = s.vals.every(v => typeof v === 'number');
+        let winnerIdx = -1;
+        if (isNum && s.higher != null) {
+            let bestVal = s.higher ? -Infinity : Infinity;
+            s.vals.forEach((v, i) => { if (s.higher ? v > bestVal : v < bestVal) { bestVal = v; winnerIdx = i; } });
+        }
+        rowsHtml += `<div class="compare-stat-label">${s.label}</div>`;
+        rowsHtml += `<div style="display:grid; grid-template-columns:${gridCols}; gap:0;">`;
+        s.vals.forEach((v, i) => {
+            const isWinner = i === winnerIdx;
+            let display = v;
+            if (s.special === 'stars' && v > 0) display = v + '★';
+            if (s.label === 'Goal Difference' && typeof v === 'number') display = (v > 0 ? '+' : '') + v;
+            rowsHtml += `<div class="compare-stat-val ${isWinner ? 'winner' : ''}" style="text-align:center;">${display}</div>`;
+        });
+        rowsHtml += '</div>';
+    });
+    display.innerHTML = headerHtml + rowsHtml;
+}
+
+async function openCompare() {
+    const overlay = document.getElementById('compare-overlay');
+    if (!overlay) return;
+    overlay.classList.add('visible');
+    compareState = { entities: [null, null], maxSlots: 4 };
+    const display = document.getElementById('compare-display');
+    display.innerHTML = '';
+    display.style.display = 'none';
+
+    // Ensure data is loaded for search
+    if (!crossYearIndex.loaded) {
+        await ensureCrossYearIndex();
+        buildGlobalSearchIndex();
+    }
+
+    renderCompareSlots();
+}
+
+function closeCompare() {
+    const overlay = document.getElementById('compare-overlay');
+    if (overlay) overlay.classList.remove('visible');
+}
+
+// ==========================================
+// ANIMATED TOURNAMENT REPLAY (ENHANCED)
+// ==========================================
+// Phase-state machine that "plays" the tournament match-by-match with:
+//   - Anticipation reveal (date, teams, venue, ref)
+//   - Trapezoidal pitch with player icons at formation positions
+//   - Live event ticker (goals, cards, subs) with mini flashes
+//   - Full-time whistle + score
+//   - F1-style position panel update (group standings or knockout progress)
+//   - Special ceremony intro/outro for the Final
+//   - Brief pause between matches so user can pause manually
+
+let replayState = {
+    playing: false,
+    currentIdx: 0,
+    speed: 1,
+    showGoals: true,
+    showCards: true,
+    showSubs: true,
+    timer: null,
+    phaseTimer: null,
+    historicalMatches: null,
+    matchCards: [],
+    bracketTreeBackup: null,
+    f1State: null,
+    currentMatch: null,
+    currentPhase: null,
+    phaseQueue: [],
+    phaseIdx: 0,
+    revealedMatchKeys: new Set(),
+    currentScore: { home: 0, away: 0 },
+    // Sub/red card state
+    matchPlayerState: null, // { home: {onPitch:[], benched:[]}, away: {onPitch:[], benched:[]} }
+    pendingAnim: null, // { side, player, animClass, number, pitchX, pitchY, benchX, benchY }
+};
+
+// ----- HELPERS -----
+
+function getReplayTotal() {
+    if (replayState.historicalMatches && replayState.historicalMatches.length > 0) {
+        return replayState.historicalMatches.length;
+    }
+    return replayState.matchCards.length;
+}
+
+function getReplayMatch(idx) {
+    if (replayState.historicalMatches && replayState.historicalMatches.length > 0) {
+        return replayState.historicalMatches[idx];
+    }
+    const card = replayState.matchCards[idx];
+    if (!card) return null;
+    const matchId = card.id.replace('match-', '');
+    if (typeof findMatchById === 'function') {
+        const r = findMatchById(matchId);
+        return r.match;
+    }
+    return null;
+}
+
+function matchKey(m) {
+    if (!m) return '';
+    return (m.homeTeam || '?') + '_' + (m.awayTeam || '?') + '_' + (m.date || '');
+}
+
+function normalizeStage(s) {
+    if (!s) return '';
+    const v = String(s).toLowerCase();
+    if (v === 'group' || v.indexOf('group') >= 0) return 'group';
+    if (v === 'r32' || v === 'round_of_32' || v === 'round of 32' || v === 'ro32') return 'r32';
+    if (v === 'r16' || v === 'round_of_16' || v === 'round of 16' || v === 'ro16') return 'r16';
+    if (v === 'qf' || v === 'quarter_final' || v === 'quarterfinal' || v === 'quarter final') return 'qf';
+    if (v === 'sf' || v === 'semi_final' || v === 'semifinal' || v === 'semi final') return 'sf';
+    if (v === 'final') return 'final';
+    // 3rd place: handle various formats including "third_place_playoff", "third-place", etc.
+    if (v === '3rd' || v.indexOf('third') >= 0 || v.indexOf('3rd') >= 0) return '3rd';
+    // 4th place: handle various formats
+    if (v === '4th' || v.indexOf('fourth') >= 0 || v.indexOf('4th') >= 0) return '4th';
+    return v;
+}
+
+function stageLabel(s) {
+    const map = { group: 'Group Stage', r32: 'Round of 32', r16: 'Round of 16', qf: 'Quarter-Final', sf: 'Semi-Final', final: 'Final', '3rd': 'Third-Place' };
+    return map[normalizeStage(s)] || (s || '');
+}
+
+function stageShort(s) {
+    const map = { group: 'GRP', r32: 'R32', r16: 'R16', qf: 'QF', sf: 'SF', final: 'F', '3rd': '3rd', '4th': '4th' };
+    return map[normalizeStage(s)] || (s || '');
+}
+
+function isKnockoutStage(s) {
+    const n = normalizeStage(s);
+    return n === 'r32' || n === 'r16' || n === 'qf' || n === 'sf' || n === 'final' || n === '3rd' || n === '4th';
+}
+
+function determineWinner(m) {
+    if (!m) return null;
+    // Check regular score first
+    if ((m.homeScore || 0) > (m.awayScore || 0)) return m.homeTeam;
+    if ((m.awayScore || 0) > (m.homeScore || 0)) return m.awayTeam;
+    
+    // Scores are tied — check penalties (try all possible field name formats)
+    // Format 1: m.penalties = { home: N, away: N }
+    if (m.penalties) {
+        if ((m.penalties.home || 0) > (m.penalties.away || 0)) return m.homeTeam;
+        if ((m.penalties.away || 0) > (m.penalties.home || 0)) return m.awayTeam;
+    }
+    // Format 2: m.homePen / m.awayPen
+    if (m.homePen != null && m.awayPen != null) {
+        if (m.homePen > m.awayPen) return m.homeTeam;
+        if (m.awayPen > m.homePen) return m.awayTeam;
+    }
+    // Format 3: m.pen1 / m.pen2
+    if (m.pen1 != null && m.pen2 != null) {
+        if (m.pen1 > m.pen2) return m.homeTeam;
+        if (m.pen2 > m.pen1) return m.awayTeam;
+    }
+    // Format 4: m.home.pen / m.away.pen (from API-style data)
+    if (m.home && m.away) {
+        const hp = m.home.pen || m.home.penalties;
+        const ap = m.away.pen || m.away.penalties;
+        if (hp != null && ap != null) {
+            if (hp > ap) return m.homeTeam;
+            if (ap > hp) return m.awayTeam;
+        }
+    }
+    
+    // Final fallback: use m.winner field if available, else home team
+    if (m.winner) return m.winner;
+    return m.homeTeam; // graceful fallback
+}
+
+function computeScoreAtMinute(m, minute) {
+    let home = 0, away = 0;
+    (m && m.goals || []).forEach(g => {
+        if ((g.minute || 0) <= (minute || 0)) {
+            if (g.team === 'home') home++;
+            else if (g.team === 'away') away++;
+        }
+    });
+    return { home, away };
+}
+
+// ----- F1 STATE -----
+
+// Build a lookup map: matchKey → winner, from teams_summary knockoutPath data.
+// This is the most reliable source of truth for who won each knockout match
+// (handles penalties, AET, etc. without parsing score fields).
+let knockoutWinnerLookup = {};
+
+function buildKnockoutWinnerLookup() {
+    knockoutWinnerLookup = {};
+    if (!histLookups.teams) return;
+    
+    // For each team, check their knockoutPath
+    Object.values(histLookups.teams).forEach(teamData => {
+        const path = teamData.knockoutPath;
+        if (!Array.isArray(path)) return;
+        
+        path.forEach(entry => {
+            if (!entry.opponent || entry.won === undefined) return;
+            const stage = normalizeStage(entry.stage);
+            if (!isKnockoutStage(stage)) return;
+            
+            // Build a match key that matches what matchKey() produces
+            // We don't know the date here, so we use team names + stage
+            // The lookup key is: stage + homeTeam + awayTeam (both orders)
+            const team = teamData.name || teamData.team;
+            const opp = entry.opponent;
+            
+            if (entry.won) {
+                // This team won against opponent
+                knockoutWinnerLookup[stage + '_' + team + '_' + opp] = team;
+                knockoutWinnerLookup[stage + '_' + opp + '_' + team] = team;
+            } else {
+                // This team lost to opponent
+                knockoutWinnerLookup[stage + '_' + team + '_' + opp] = opp;
+                knockoutWinnerLookup[stage + '_' + opp + '_' + team] = opp;
+            }
+        });
+    });
+}
+
+// Look up the winner of a knockout match from the knockoutPath data
+function getKnockoutWinner(m) {
+    if (!m) return null;
+    const stage = normalizeStage(m.stage);
+    if (!isKnockoutStage(stage)) return null;
+    
+    // Try both team orderings
+    const key1 = stage + '_' + m.homeTeam + '_' + m.awayTeam;
+    const key2 = stage + '_' + m.awayTeam + '_' + m.homeTeam;
+    
+    return knockoutWinnerLookup[key1] || knockoutWinnerLookup[key2] || null;
+}
+
+function initF1State() {
+    const all = replayState.historicalMatches || [];
+    const initialGroups = {};
+    const groupTeamsMap = {};
+
+    // Build knockout winner lookup from teams_summary knockoutPath data
+    buildKnockoutWinnerLookup();
+
+    const standings = histLookups.standings;
+    if (standings && standings.groups) {
+        Object.entries(standings.groups).forEach(([gKey, teams]) => {
+            initialGroups[gKey] = teams.map(t => ({
+                team: t.team, played: 0, won: 0, drawn: 0, lost: 0,
+                gf: 0, ga: 0, gd: 0, pts: 0, position: 99, advanced: false,
+            }));
+            teams.forEach(t => { groupTeamsMap[t.team] = gKey; });
+        });
+    }
+
+    const hasGroupStage = all.some(m => normalizeStage(m.stage) === 'group');
+    const mode = hasGroupStage ? 'group' : 'knockout';
+
+    let aliveTeams = [];
+    if (mode === 'knockout') {
+        const teamSet = new Set();
+        all.forEach(m => { teamSet.add(m.homeTeam); teamSet.add(m.awayTeam); });
+        aliveTeams = Array.from(teamSet);
+    }
+
+    replayState.f1State = {
+        mode: mode,
+        groups: initialGroups,
+        groupTeamsMap: groupTeamsMap,
+        aliveTeams: aliveTeams,
+        eliminated: [],
+        champion: null,
+        playedKeys: new Set(),
+        knockoutStarted: false,
+    };
+}
+
+function findGroupForTeam(teamName) {
+    if (!replayState.f1State) return null;
+    const g = replayState.f1State.groupTeamsMap[teamName];
+    if (!g) return null;
+    return replayState.f1State.groups[g] || null;
+}
+
+function applyGroupResult(group, team, gf, ga) {
+    const entry = group.find(t => t.team === team);
+    if (!entry) return;
+    entry.played++;
+    entry.gf += gf;
+    entry.ga += ga;
+    entry.gd = entry.gf - entry.ga;
+    if (gf > ga) { entry.won++; entry.pts += 3; }
+    else if (gf === ga) { entry.drawn++; entry.pts += 1; }
+    else { entry.lost++; }
+}
+
+function sortGroup(group) {
+    group.sort((a, b) =>
+        (b.pts - a.pts) ||
+        (b.gd - a.gd) ||
+        (b.gf - a.gf) ||
+        (a.team || '').localeCompare(b.team || '')
+    );
+    group.forEach((t, i) => { t.position = i + 1; t.advanced = i < 2; });
+}
+
+function promoteGroupsToKnockout() {
+    if (!replayState.f1State) return;
+    if (replayState.f1State.knockoutStarted) return;
+    const adv = [];
+    Object.values(replayState.f1State.groups).forEach(g => {
+        g.filter(t => t.advanced).forEach(t => adv.push(t.team));
+    });
+    replayState.f1State.aliveTeams = adv;
+    replayState.f1State.knockoutStarted = true;
+}
+
+function updateF1State(m) {
+    if (!replayState.f1State) return;
+    const key = matchKey(m);
+    if (replayState.f1State.playedKeys.has(key)) return;
+    replayState.f1State.playedKeys.add(key);
+
+    const stage = normalizeStage(m.stage) || normalizeStage(m.stageRaw);
+
+    if (replayState.f1State.mode === 'group' && stage === 'group') {
+        const grp = findGroupForTeam(m.homeTeam);
+        if (grp) {
+            applyGroupResult(grp, m.homeTeam, m.homeScore, m.awayScore);
+            applyGroupResult(grp, m.awayTeam, m.awayScore, m.homeScore);
+            sortGroup(grp);
+        }
+        // Check if all group matches are done
+        const all = replayState.historicalMatches || [];
+        const groupMatches = all.filter(mm => normalizeStage(mm.stage) === 'group');
+        const allGroupPlayed = groupMatches.every(mm =>
+            replayState.f1State.playedKeys.has(matchKey(mm))
+        );
+        if (allGroupPlayed) {
+            promoteGroupsToKnockout();
+        }
+    } else if (isKnockoutStage(stage)) {
+        if (replayState.f1State.mode === 'group' && !replayState.f1State.knockoutStarted) {
+            promoteGroupsToKnockout();
+        }
+        // Use knockoutPath data as primary source of truth (handles penalties/AET correctly)
+        // Fall back to determineWinner if knockoutPath data is unavailable
+        const winner = getKnockoutWinner(m) || determineWinner(m);
+        const loser = winner === m.homeTeam ? m.awayTeam : m.homeTeam;
+
+        if (stage === '3rd') {
+            // Both teams already eliminated in SF; update their existing entries to 3rd/4th
+            // (don't add duplicates — find and update the existing SF entries)
+            const loserEntry = replayState.f1State.eliminated.find(e => e.team === loser);
+            if (loserEntry) {
+                loserEntry.stage = '4th';
+            } else {
+                replayState.f1State.eliminated.unshift({ team: loser, stage: '4th', date: m.date });
+            }
+            const winnerEntry = replayState.f1State.eliminated.find(e => e.team === winner);
+            if (winnerEntry) {
+                winnerEntry.stage = '3rd';
+            } else {
+                replayState.f1State.eliminated.unshift({ team: winner, stage: '3rd', date: m.date });
+            }
+            return;
+        }
+
+        replayState.f1State.aliveTeams = replayState.f1State.aliveTeams.filter(t => t !== loser);
+        replayState.f1State.eliminated.unshift({ team: loser, stage: stage, date: m.date });
+
+        if (stage === 'final') {
+            replayState.f1State.champion = winner;
+            replayState.f1State.aliveTeams = [winner];
+        }
+    }
+}
+
+// ----- F1 PANEL RENDERING -----
+
+function renderF1Panel(activeMatch) {
+    const body = document.getElementById('f1-body');
+    const titleEl = document.getElementById('f1-title');
+    const modeTag = document.getElementById('f1-mode-tag');
+    if (!body || !replayState.f1State) return;
+
+    const f1 = replayState.f1State;
+
+    if (f1.mode === 'group' && !f1.knockoutStarted) {
+        if (titleEl) titleEl.textContent = 'Group Standings';
+        if (modeTag) modeTag.textContent = 'GROUP';
+
+        let activeGroupKey = null;
+        if (activeMatch) {
+            activeGroupKey = f1.groupTeamsMap[activeMatch.homeTeam] || null;
+        }
+
+        const html = Object.entries(f1.groups).map(([gKey, teams]) => {
+            const isActive = (gKey === activeGroupKey);
+            const sorted = teams.slice().sort((a, b) =>
+                (b.pts - a.pts) || (b.gd - a.gd) || (b.gf - a.gf) || (a.team || '').localeCompare(b.team || '')
+            );
+            sorted.forEach((t, i) => { t.position = i + 1; t.advanced = i < 2; });
+
+            const rowsHtml = sorted.map((t, i) => {
+                const isAdv = t.advanced;
+                const isActiveTeam = activeMatch && (t.team === activeMatch.homeTeam || t.team === activeMatch.awayTeam);
+                const cls = ['f1-row', isAdv ? 'advanced' : '', isActiveTeam ? 'active' : ''].filter(Boolean).join(' ');
+                const flag = flagImg(t.team);
+                return '<div class="' + cls + '" data-team="' + esc(t.team) + '" style="transform: translateY(' + (i * 28) + 'px);">' +
+                    '<span class="f1-pos">' + (i + 1) + '</span>' +
+                    flag +
+                    '<span class="f1-team">' + esc(t.team) + '</span>' +
+                    '<span class="f1-stat">' + t.played + '</span>' +
+                    '<span class="f1-stat">' + t.gf + '-' + t.ga + '</span>' +
+                    '<span class="f1-pts">' + t.pts + '</span>' +
+                    '</div>';
+            }).join('');
+
+            const advLineTop = 2 * 28 + 4;
+            const advLineHtml = '<div class="f1-adv-line" style="top: ' + advLineTop + 'px;"></div>';
+
+            return '<div class="f1-group-block">' +
+                '<div class="f1-group-title' + (isActive ? ' active-group' : '') + '">Group ' + esc(gKey) + (isActive ? ' •' : '') + '</div>' +
+                '<div class="f1-rows-container" style="height: ' + (sorted.length * 28 + 6) + 'px;">' +
+                rowsHtml + advLineHtml +
+                '</div></div>';
+        }).join('');
+
+        body.innerHTML = html;
+    } else {
+        // Knockout mode (or group stage completed)
+        if (titleEl) titleEl.textContent = 'Tournament Tracker';
+        if (modeTag) modeTag.textContent = f1.mode === 'group' ? 'K.O.' : 'KNOCKOUT';
+
+        // Helper: get a team's group stage points
+        const getGroupPts = (teamName) => {
+            for (const g of Object.values(f1.groups)) {
+                const entry = g.find(t => t.team === teamName);
+                if (entry) return entry.pts;
+            }
+            return 0;
+        };
+
+        // Determine runner-up (if final has been played)
+        const allMatches = replayState.historicalMatches || [];
+        const finalMatch = allMatches.find(mm => normalizeStage(mm.stage) === 'final');
+        let runnerUp = null;
+        if (finalMatch && f1.playedKeys.has(matchKey(finalMatch))) {
+            // Use knockoutPath data as primary source, fall back to determineWinner
+            const winner = getKnockoutWinner(finalMatch) || determineWinner(finalMatch);
+            runnerUp = winner === finalMatch.homeTeam ? finalMatch.awayTeam : finalMatch.homeTeam;
+        }
+
+        // Build stillIn and knockedOut arrays
+        const stillIn = [];
+        const bracketKnockedOut = []; // eliminated in bracket stage
+        const groupKnockedOut = [];   // eliminated in group stage
+
+        // Helper: get finalPosition from teams_summary (handles aliases)
+        const getFinalPosition = (teamName) => {
+            const td = lookupTeam(teamName);
+            if (td && td.finalPosition != null) return td.finalPosition;
+            return null;
+        };
+
+        // If the tournament is complete (champion is set), use finalPosition for top 4
+        // This is the most reliable source — handles AET/penalties/3rd-place correctly
+        if (f1.champion) {
+            // Build ranking from finalPosition for positions 1-4
+            const topTeams = [];
+            Object.values(histLookups.teams || {}).forEach(td => {
+                const fp = td.finalPosition;
+                if (fp != null && fp >= 1 && fp <= 4) {
+                    topTeams.push({ team: td.name || td.team, fp });
+                }
+            });
+            topTeams.sort((a, b) => a.fp - b.fp);
+            
+            topTeams.forEach(t => {
+                if (t.fp === 1) {
+                    stillIn.push({ team: t.team, tag: 'WINNER', cls: 'champion' });
+                } else if (t.fp === 2) {
+                    bracketKnockedOut.push({ team: t.team, tag: 'F', cls: 'eliminated' });
+                    runnerUp = t.team;
+                } else if (t.fp === 3) {
+                    bracketKnockedOut.push({ team: t.team, tag: '3rd', cls: 'eliminated' });
+                } else if (t.fp === 4) {
+                    bracketKnockedOut.push({ team: t.team, tag: '4th', cls: 'eliminated' });
+                }
+            });
+            
+            // If finalPosition didn't provide champion, use f1.champion
+            if (!topTeams.find(t => t.fp === 1)) {
+                stillIn.push({ team: f1.champion, tag: 'WINNER', cls: 'champion' });
+            }
+            
+            // Add other eliminated teams (positions 5+) from f1.eliminated, skipping top 4
+            const topTeamNames = new Set(topTeams.map(t => t.team));
+            f1.eliminated.forEach(e => {
+                if (topTeamNames.has(e.team)) return;
+                if (e.team === runnerUp) return;
+                const stage = normalizeStage(e.stage);
+                if (isKnockoutStage(stage)) {
+                    bracketKnockedOut.push({ team: e.team, tag: stageShort(e.stage) || e.stage, cls: 'eliminated' });
+                }
+            });
+        } else {
+            // Tournament in progress — use the existing logic
+            if (f1.champion) {
+                stillIn.push({ team: f1.champion, tag: 'WINNER', cls: 'champion' });
+            }
+            // Other alive teams — tag with their current bracket stage
+            // Also check the active match — if a team is in it, tag with that match's stage
+            f1.aliveTeams.filter(t => t !== f1.champion).forEach(t => {
+                let reachedStage = 'STILL IN';
+                // First check if the team is in the active match
+                if (activeMatch && (activeMatch.homeTeam === t || activeMatch.awayTeam === t)) {
+                    const st = normalizeStage(activeMatch.stage);
+                    if (isKnockoutStage(st)) {
+                        reachedStage = stageShort(st) || 'K.O.';
+                    }
+                }
+                // If not found in active match, look at the most recent played KO match
+                if (reachedStage === 'STILL IN') {
+                    const allMatches = replayState.historicalMatches || [];
+                    for (let i = allMatches.length - 1; i >= 0; i--) {
+                        const mm = allMatches[i];
+                        if (f1.playedKeys.has(matchKey(mm)) && (mm.homeTeam === t || mm.awayTeam === t)) {
+                            const st = normalizeStage(mm.stage);
+                            if (isKnockoutStage(st)) {
+                                reachedStage = stageShort(st) || 'K.O.';
+                                break;
+                            }
+                        }
+                    }
+                }
+                stillIn.push({ team: t, tag: reachedStage, cls: 'advanced' });
+            });
+
+            // Runner-up
+            if (runnerUp && runnerUp !== f1.champion) {
+                bracketKnockedOut.push({ team: runnerUp, tag: 'F', cls: 'eliminated' });
+            }
+
+            // Other eliminated teams — deduplicate by team name (keep the best stage)
+            // Use finalPosition to override stage for 3rd/4th place (more reliable than replay processing)
+            const bracketSeen = new Set(bracketKnockedOut.map(r => r.team));
+            // Sort eliminated by stage rank (best first) so we keep the best entry per team
+            const elimRank = { 'winner': -1, 'f': 0, 'final': 0, '3rd': 1, '4th': 2, 'sf': 3, 'qf': 4, 'r16': 5, 'r32': 6 };
+            const getElimRank = (s) => { const v = elimRank[s]; return v != null ? v : 99; };
+            const sortedElim = f1.eliminated.slice().sort((a, b) => {
+                const ra = getElimRank(normalizeStage(a.stage));
+                const rb = getElimRank(normalizeStage(b.stage));
+                return ra - rb;
+            });
+            sortedElim.forEach(e => {
+                if (e.team === runnerUp) return;
+                if (bracketSeen.has(e.team)) return; // skip duplicates
+                // Override stage using finalPosition if available (handles 3rd/4th place correctly)
+                let displayStage = e.stage;
+                const fp = getFinalPosition(e.team);
+                if (fp === 3) displayStage = '3rd';
+                else if (fp === 4) displayStage = '4th';
+                const stage = normalizeStage(displayStage);
+                if (isKnockoutStage(stage)) {
+                    bracketKnockedOut.push({ team: e.team, tag: stageShort(displayStage) || displayStage, cls: 'eliminated' });
+                    bracketSeen.add(e.team);
+                }
+            });
+        }
+
+        // Group stage non-advancers
+        if (f1.mode === 'group' && f1.knockoutStarted) {
+            const seen = new Set();
+            [...stillIn, ...bracketKnockedOut].forEach(r => seen.add(r.team));
+            Object.values(f1.groups).forEach(g => {
+                g.filter(t => !t.advanced && !seen.has(t.team)).forEach(t => {
+                    groupKnockedOut.push({ team: t.team, tag: 'GRP', cls: 'eliminated' });
+                    seen.add(t.team);
+                });
+            });
+        }
+
+        // Sort: stillIn by how far they've reached (later stage = higher rank), then by group pts
+        // This ensures a team that lost in R32 doesn't stay #1 just because it had high group pts
+        // bracketRank: lower = better. Order: Winner > Runner-up > 3rd > 4th > SF(not-played-3rd) > QF > R16 > R32
+        // NOTE: 3rd/4th place teams ARE the SF losers who played the 3rd place match.
+        // They should rank ABOVE QF losers, not below.
+        // NOTE: Must use `!= null` check, NOT `|| 99` — because rank 0 (final) is falsy in JS!
+        const bracketRank = { 'winner': -1, 'f': 0, 'final': 0, '3rd': 1, '4th': 2, 'sf': 3, 'qf': 4, 'r16': 5, 'r32': 6 };
+        const getRank = (tag) => {
+            const v = bracketRank[tag.toLowerCase()];
+            return v != null ? v : 99;
+        };
+        const getReachedStage = (teamName) => {
+            const allMatches = replayState.historicalMatches || [];
+            let latestStage = null;
+            let latestStageRank = 99;
+            for (let i = allMatches.length - 1; i >= 0; i--) {
+                const mm = allMatches[i];
+                if (f1.playedKeys.has(matchKey(mm)) && (mm.homeTeam === teamName || mm.awayTeam === teamName)) {
+                    const st = normalizeStage(mm.stage);
+                    if (isKnockoutStage(st)) {
+                        const rank = getRank(st);
+                        if (rank < latestStageRank) {
+                            latestStageRank = rank;
+                            latestStage = st;
+                        }
+                    }
+                }
+            }
+            return { stage: latestStage, rank: latestStageRank };
+        };
+        stillIn.sort((a, b) => {
+            const ra = getReachedStage(a.team).rank;
+            const rb = getReachedStage(b.team).rank;
+            if (ra !== rb) return ra - rb;
+            return getGroupPts(b.team) - getGroupPts(a.team);
+        });
+        // Bracket-eliminated: sort by how far they got (Final > SF > QF > R16 > R32), then by group pts
+        bracketKnockedOut.sort((a, b) => {
+            const ra = getRank(a.tag);
+            const rb = getRank(b.tag);
+            if (ra !== rb) return ra - rb;
+            return getGroupPts(b.team) - getGroupPts(a.team);
+        });
+        groupKnockedOut.sort((a, b) => getGroupPts(b.team) - getGroupPts(a.team));
+
+        // Order: still-in → bracket-eliminated → group-eliminated
+        const ranking = [...stillIn, ...bracketKnockedOut, ...groupKnockedOut];
+
+        // Determine title based on tournament progress
+        let f1Title = 'Tournament Tracker';
+        if (f1.champion) {
+            f1Title = 'Final Ranking';
+        } else if (f1.knockoutStarted) {
+            // Find the latest bracket stage being played
+            const allMatches = replayState.historicalMatches || [];
+            let latestKOStage = null;
+            for (let i = 0; i < allMatches.length; i++) {
+                const mm = allMatches[i];
+                if (f1.playedKeys.has(matchKey(mm)) || (activeMatch && mm === activeMatch)) {
+                    const st = normalizeStage(mm.stage);
+                    if (isKnockoutStage(st)) latestKOStage = st;
+                }
+            }
+            if (latestKOStage) {
+                f1Title = stageLabel(latestKOStage) + ' Stage';
+            } else {
+                f1Title = 'Knockout Stage';
+            }
+        } else {
+            f1Title = 'Group Standings';
+        }
+
+        if (ranking.length === 0) {
+            body.innerHTML = '<div class="f1-empty">Awaiting first match...</div>';
+            return;
+        }
+
+        const rowsHtml = ranking.map((r, i) => {
+            const isActiveTeam = activeMatch && (r.team === activeMatch.homeTeam || r.team === activeMatch.awayTeam);
+            const cls = ['f1-row', r.cls || '', isActiveTeam ? 'active' : ''].filter(Boolean).join(' ');
+            const flag = flagImg(r.team);
+            return '<div class="' + cls + '" data-team="' + esc(r.team) + '" style="transform: translateY(' + (i * 28) + 'px);">' +
+                '<span class="f1-pos">' + (i + 1) + '</span>' +
+                flag +
+                '<span class="f1-team">' + esc(r.team) + '</span>' +
+                '<span class="f1-stage-tag">' + esc(r.tag) + '</span>' +
+                '</div>';
+        }).join('');
+
+        body.innerHTML = '<div class="f1-group-block">' +
+            '<div class="f1-group-title">' + esc(f1Title) + '</div>' +
+            '<div class="f1-rows-container" style="height: ' + (ranking.length * 28 + 6) + 'px;">' +
+            rowsHtml +
+            '</div></div>';
+    }
+
+    // Auto-scroll to active group/teams if out of view
+    if (activeMatch) {
+        const activeEl = body.querySelector('.f1-row.active') || body.querySelector('.f1-group-title.active-group');
+        if (activeEl) {
+            const bodyRect = body.getBoundingClientRect();
+            const elRect = activeEl.getBoundingClientRect();
+            if (elRect.top < bodyRect.top + 5 || elRect.bottom > bodyRect.bottom - 5) {
+                const delta = elRect.top - bodyRect.top - 10;
+                body.scrollBy({ top: delta, behavior: 'smooth' });
+            }
+        }
+    }
+}
+
+// ----- SHOW/HIDE CONTROLS -----
+
+function showReplayControls() {
+    const controls = document.getElementById('replay-controls');
+    const f1Panel = document.getElementById('replay-f1-panel');
+    if (!controls) return;
+
+    let matches = [];
+    if (histLookups.allMatches && histLookups.allMatches.length > 0) {
+        matches = histLookups.allMatches.slice().sort((a, b) => new Date(a.date) - new Date(b.date));
+        
+        // Add 3rd place match from bracket data if it's not already in matches_FULL
+        // (some data files don't include the 3rd place match in matches_FULL)
+        if (histLookups.bracket && histLookups.bracket.stages && histLookups.bracket.stages.third_place) {
+            const tpMatch = histLookups.bracket.stages.third_place[0];
+            if (tpMatch) {
+                // Convert bracket-style match to matches_FULL format
+                const tpConverted = {
+                    homeTeam: tpMatch.home, awayTeam: tpMatch.away,
+                    homeScore: tpMatch.homeScore, awayScore: tpMatch.awayScore,
+                    date: tpMatch.kickoffUtc || tpMatch.date,
+                    stage: 'third_place', stageRaw: '3rd',
+                    winner: tpMatch.winner, loser: tpMatch.loser,
+                    goals: [], cards: [], substitutions: [], lineups: { home: [], away: [] }
+                };
+                // Check if it's already in matches (by team names + date)
+                const exists = matches.some(m => 
+                    ((m.homeTeam === tpConverted.homeTeam && m.awayTeam === tpConverted.awayTeam) ||
+                     (m.homeTeam === tpConverted.awayTeam && m.awayTeam === tpConverted.homeTeam)) &&
+                    normalizeStage(m.stage) === '3rd'
+                );
+                if (!exists && tpConverted.homeTeam && tpConverted.awayTeam) {
+                    matches.push(tpConverted);
+                    // Re-sort to maintain chronological order
+                    matches.sort((a, b) => new Date(a.date) - new Date(b.date));
+                }
+            }
+        }
+    } else {
+        const cards = Array.from(document.querySelectorAll('#timeline-track .match-card'));
+        cards.sort((a, b) => new Date(a.dataset.date) - new Date(b.dataset.date));
+        replayState.matchCards = cards;
+        replayState.currentIdx = 0;
+        controls.classList.add('visible');
+        blankBracketTreeIfNeeded();
+        return;
+    }
+
+    replayState.historicalMatches = matches;
+    replayState.matchCards = [];
+    replayState.currentIdx = 0;
+    replayState.revealedMatchKeys = new Set();
+
+    initF1State();
+    renderF1Panel(null);
+
+    controls.classList.add('visible');
+    if (f1Panel) f1Panel.classList.add('visible');
+
+    blankBracketTreeIfNeeded();
+}
+
+function hideReplayControls() {
+    const controls = document.getElementById('replay-controls');
+    const stage = document.getElementById('replay-stage');
+    const menu = document.getElementById('replay-event-menu');
+    const f1Panel = document.getElementById('replay-f1-panel');
+    const replayBtn = document.getElementById('replay-btn');
+    if (controls) controls.classList.remove('visible');
+    if (stage) stage.classList.remove('visible');
+    if (menu) menu.classList.remove('visible');
+    if (f1Panel) f1Panel.classList.remove('visible');
+    if (replayBtn) replayBtn.classList.remove('active');
+    // Fully stop all timers
+    replayState.playing = false;
+    if (replayState.timer) { clearTimeout(replayState.timer); replayState.timer = null; }
+    if (replayState.phaseTimer) { clearTimeout(replayState.phaseTimer); replayState.phaseTimer = null; }
+    // Clear state to prevent any background processing
+    replayState.phaseQueue = [];
+    replayState.phaseIdx = 0;
+    replayState.currentMatch = null;
+    replayState.matchPlayerState = null;
+    restoreBracketTree();
+}
+
+function pauseReplay() {
+    replayState.playing = false;
+    if (replayState.timer) { clearTimeout(replayState.timer); replayState.timer = null; }
+    if (replayState.phaseTimer) { clearTimeout(replayState.phaseTimer); replayState.phaseTimer = null; }
+    const playBtn = document.getElementById('rp-play');
+    if (playBtn) playBtn.textContent = '▶';
+    const counterEl = document.querySelector('.rs-match-counter');
+    if (counterEl && replayState.currentMatch) {
+        counterEl.textContent = (replayState.currentIdx + 1) + ' / ' + getReplayTotal() + ' — PAUSED';
+    }
+}
+
+function playReplay() {
+    const total = getReplayTotal();
+    if (total === 0) return;
+
+    // If at the end, restart from beginning
+    if (replayState.currentIdx >= total) {
+        replayState.currentIdx = 0;
+        initF1State();
+        replayState.revealedMatchKeys = new Set();
+        restoreBracketTree();
+        blankBracketTreeIfNeeded();
+        renderF1Panel(null);
+        replayState.phaseIdx = 0;
+    }
+    replayState.playing = true;
+    const playBtn = document.getElementById('rp-play');
+    if (playBtn) playBtn.textContent = '⏸';
+
+    // If we have an active phase queue (paused mid-match), continue from current phase
+    // Otherwise start the match from the beginning
+    if (replayState.phaseQueue && replayState.phaseQueue.length > 0 && replayState.phaseIdx < replayState.phaseQueue.length) {
+        runNextPhase();
+    } else {
+        playMatchAt(replayState.currentIdx);
+    }
+}
+
+function skipReplay(dir) {
+    pauseReplay();
+    const total = getReplayTotal();
+    if (total === 0) return;
+    const newIdx = Math.max(0, Math.min(total - 1, replayState.currentIdx + dir));
+    if (newIdx === replayState.currentIdx && dir > 0) return;
+    replayState.currentIdx = newIdx;
+
+    // Rewind: re-init F1 state and re-apply all matches before newIdx
+    initF1State();
+    replayState.revealedMatchKeys = new Set();
+    restoreBracketTree();
+    blankBracketTreeIfNeeded();
+    for (let i = 0; i < replayState.currentIdx; i++) {
+        const m = getReplayMatch(i);
+        if (m) {
+            updateF1State(m);
+            revealBracketMatch(m.homeTeam, m.awayTeam);
+            replayState.revealedMatchKeys.add(matchKey(m));
+        }
+    }
+    renderF1Panel(null);
+
+    replayState.playing = true;
+    const playBtn = document.getElementById('rp-play');
+    if (playBtn) playBtn.textContent = '⏸';
+    playMatchAt(replayState.currentIdx);
+}
+
+// Speed control — slower/faster buttons step through sorted speeds
+const REPLAY_SPEEDS = [0.5, 0.75, 1, 1.5, 2, 2.5];
+
+function updateSpeedDisplay() {
+    const el = document.getElementById('rp-speed');
+    if (el) el.textContent = replayState.speed + 'x';
+}
+
+function changeSpeed(dir) {
+    // Find closest current speed index
+    let curIdx = REPLAY_SPEEDS.indexOf(replayState.speed);
+    if (curIdx < 0) {
+        // Find closest if not exact
+        curIdx = REPLAY_SPEEDS.reduce((best, s, i) =>
+            Math.abs(s - replayState.speed) < Math.abs(REPLAY_SPEEDS[best] - replayState.speed) ? i : best, 0);
+    }
+    const newIdx = Math.max(0, Math.min(REPLAY_SPEEDS.length - 1, curIdx + dir));
+    replayState.speed = REPLAY_SPEEDS[newIdx];
+    updateSpeedDisplay();
+}
+
+function resetSpeed() {
+    replayState.speed = 1;
+    updateSpeedDisplay();
+}
+
+// ----- MAIN ORCHESTRATOR -----
+
+function playMatchAt(idx) {
+    if (!replayState.playing) return;
+    const m = getReplayMatch(idx);
+    if (!m) { pauseReplay(); return; }
+
+    replayState.currentMatch = m;
+    replayState.currentScore = { home: 0, away: 0 };
+    replayState.currentMatchRevealedEvents = [];
+    replayState.currentMatchHighlights = [];
+    replayState.activeHighlight = null;
+    replayState.pendingAnim = null;
+
+    // Initialize player state: all starters on pitch, no benched players
+    const homeStarters = (m.lineups && Array.isArray(m.lineups.home)) ? m.lineups.home.filter(p => p.starter).map(p => p.player) : [];
+    const awayStarters = (m.lineups && Array.isArray(m.lineups.away)) ? m.lineups.away.filter(p => p.starter).map(p => p.player) : [];
+    replayState.matchPlayerState = {
+        home: { onPitch: homeStarters, benched: [], pendingSub: null },
+        away: { onPitch: awayStarters, benched: [], pendingSub: null },
+    };
+
+    const stage = normalizeStage(m.stage);
+    const isFinal = (stage === 'final');
+
+    const phases = [];
+    if (isFinal) phases.push({ name: 'ceremony-intro', dur: 3000 });
+    phases.push({ name: 'anticipation', dur: 1800 });
+    phases.push({ name: 'lineup', dur: 2500 });
+    phases.push({ name: 'kickoff', dur: 400 });
+
+    const events = collectMatchEvents(m);
+    events.forEach(ev => phases.push({ name: 'event', dur: 1300, event: ev }));
+    if (events.length === 0) phases.push({ name: 'event', dur: 1200, event: null });
+
+    phases.push({ name: 'whistle', dur: 1200 });
+    if (isFinal) phases.push({ name: 'ceremony-outro', dur: 3500 });
+    phases.push({ name: 'pause', dur: 700 });
+
+    replayState.phaseQueue = phases;
+    replayState.phaseIdx = 0;
+
+    const stageEl = document.getElementById('replay-stage');
+    if (stageEl) stageEl.classList.add('visible');
+
+    runNextPhase();
+}
+
+function runNextPhase() {
+    if (!replayState.playing) return;
+    if (replayState.phaseIdx >= replayState.phaseQueue.length) {
+        replayState.currentIdx++;
+        if (replayState.currentIdx < getReplayTotal()) {
+            playMatchAt(replayState.currentIdx);
+        } else {
+            pauseReplay();
+            showTournamentComplete();
+        }
+        return;
+    }
+    const phase = replayState.phaseQueue[replayState.phaseIdx];
+    renderPhase(phase);
+    replayState.phaseIdx++;
+    // Speed only affects event phases; transitions (anticipation, lineup, whistle, etc.) run at constant speed
+    const isEventPhase = phase.name === 'event';
+    const effectiveSpeed = isEventPhase ? replayState.speed : 1;
+    replayState.phaseTimer = setTimeout(() => {
+        runNextPhase();
+    }, phase.dur / effectiveSpeed);
+}
+
+function showTournamentComplete() {
+    const stage = document.getElementById('replay-stage');
+    if (!stage) return;
+    const champ = replayState.f1State ? replayState.f1State.champion : null;
+    const champHtml = champ ? (
+        '<div class="rs-ceremony-champion">' +
+            flagImg(champ, 'lg') +
+            '<div class="cname">' + esc(champ) + '</div>' +
+            '<div class="clabel">Champions</div>' +
+        '</div>'
+    ) : '';
+    stage.innerHTML =
+        '<div class="rs-phase-label final">COMPLETE</div>' +
+        '<div class="rs-match-counter">' + getReplayTotal() + ' / ' + getReplayTotal() + '</div>' +
+        '<div class="rs-content">' +
+            '<div class="rs-ceremony-trophy">🏆</div>' +
+            '<div class="rs-ceremony-title">TOURNAMENT COMPLETE</div>' +
+            champHtml +
+        '</div>' +
+        '<div class="rs-progress"><div class="rs-progress-fill" style="width: 100%;"></div></div>';
+}
+
+// ----- EVENT COLLECTION -----
+
+function collectMatchEvents(m) {
+    const events = [];
+    (m.goals || []).forEach(g => {
+        if (!replayState.showGoals) return;
+        events.push({
+            type: 'goal',
+            minute: g.minute,
+            addedMinute: g.addedMinute,
+            scorer: g.scorer,
+            team: g.team,
+            eventType: g.type  // 'penalty', 'own-goal', etc (may be undefined)
+        });
+    });
+    (m.cards || []).forEach(c => {
+        if (!replayState.showCards) return;
+        events.push({
+            type: c.color === 'yellow' ? 'card-y' : 'card-r',
+            minute: c.minute,
+            addedMinute: c.addedMinute,
+            player: c.player,
+            team: c.team,
+            eventType: c.type  // may be undefined
+        });
+    });
+    (m.substitutions || []).forEach(s => {
+        if (!replayState.showSubs) return;
+        events.push({
+            type: 'sub',
+            minute: s.minute,
+            addedMinute: s.addedMinute,
+            on: s.on,
+            off: s.off,
+            team: s.team,
+            eventType: s.type  // may be undefined
+        });
+    });
+    events.sort((a, b) => (a.minute || 0) - (b.minute || 0));
+    return events;
+}
+
+// ----- PHASE RENDERER -----
+
+function renderPhase(phase) {
+    replayState.currentPhase = phase.name;
+
+    // Complete pending subs before rendering this phase
+    // (the previous phase showed the arrows, now we do the actual swap)
+    if (replayState.matchPlayerState) {
+        const ps = replayState.matchPlayerState;
+        const norm = (s) => (s || '').toLowerCase().trim().replace(/\s+/g, ' ');
+        const fzn = (full, short) => { full = norm(full); short = norm(short); if (!full||!short) return false; if (full===short) return true; return full.split(' ').includes(short); };
+        ['home', 'away'].forEach(side => {
+            const ts = ps[side];
+            if (ts.pendingSub) {
+                const p = ts.pendingSub;
+                const offInPitch = ts.onPitch.find(n => fzn(n, p.off.player));
+                if (offInPitch) ts.onPitch = ts.onPitch.filter(n => n !== offInPitch);
+                if (!ts.onPitch.some(n => fzn(n, p.onFullName))) ts.onPitch.push(p.onFullName);
+                if (!ts.benched.find(b => fzn(b.player.player, p.off.player))) ts.benched.push({ player: p.off, reason: 'sub' });
+                ts.pendingSub = null;
+            }
+        });
+    }
+
+    const stage = document.getElementById('replay-stage');
+    const m = replayState.currentMatch;
+    if (!stage || !m) return;
+
+    const isFinal = (normalizeStage(m.stage) === 'final');
+    const labelCls = isFinal ? 'rs-phase-label final' : 'rs-phase-label';
+    const labelTxt = phaseLabel(phase.name, m);
+
+    const matchPct = replayState.currentIdx / Math.max(1, getReplayTotal());
+    const phasePct = (replayState.phaseIdx - 1) / Math.max(1, replayState.phaseQueue.length) / getReplayTotal();
+    const progressPct = Math.min(100, (matchPct + phasePct) * 100);
+
+    const counterTxt = (replayState.currentIdx + 1) + ' / ' + getReplayTotal() + (replayState.playing ? '' : ' — PAUSED');
+
+    let contentHtml = '';
+    switch (phase.name) {
+        case 'ceremony-intro': contentHtml = renderCeremonyIntro(m); break;
+        case 'anticipation':   contentHtml = renderAnticipation(m); break;
+        case 'lineup':         contentHtml = renderLineup(m); break;
+        case 'kickoff':        contentHtml = renderKickoff(m); break;
+        case 'event':          contentHtml = renderEventPhase(m, phase.event); break;
+        case 'whistle':        contentHtml = renderWhistle(m); break;
+        case 'consequence':    contentHtml = renderConsequence(m); break;
+        case 'ceremony-outro': contentHtml = renderCeremonyOutro(m); break;
+        case 'pause':          contentHtml = renderPause(m); break;
+    }
+
+    stage.innerHTML =
+        '<div class="' + labelCls + '">' + labelTxt + '</div>' +
+        '<div class="rs-match-counter">' + counterTxt + '</div>' +
+        contentHtml +
+        '<div class="rs-progress"><div class="rs-progress-fill" style="width: ' + progressPct + '%;"></div></div>';
+
+    if (phase.name === 'lineup' || phase.name === 'kickoff' || phase.name === 'event') {
+        attachPlayerTooltipHandlers();
+    }
+
+    if (phase.name === 'event' && phase.event && phase.event.type === 'goal') {
+        const scoreEl = document.getElementById('rs-score-display');
+        if (scoreEl) {
+            requestAnimationFrame(() => {
+                scoreEl.classList.add('flash');
+                setTimeout(() => scoreEl.classList.remove('flash'), 600);
+            });
+        }
+    }
+}
+
+function phaseLabel(name, m) {
+    const map = {
+        'ceremony-intro': '★ WORLD CUP FINAL ★',
+        'anticipation': 'MATCH DAY',
+        'lineup': 'LINEUPS',
+        'kickoff': 'KICKOFF',
+        'event': 'LIVE',
+        'whistle': 'FULL TIME',
+        'consequence': 'RESULT',
+        'ceremony-outro': '★ CHAMPIONS ★',
+        'pause': 'NEXT MATCH',
+    };
+    return map[name] || '';
+}
+
+// ----- PHASE: CEREMONY INTRO -----
+
+function renderCeremonyIntro(m) {
+    return '' +
+        '<div class="rs-content">' +
+            '<div class="rs-ceremony">' +
+                '<div class="rs-confetti">' + generateConfetti(20) + '</div>' +
+                '<div class="rs-ceremony-trophy">🏆</div>' +
+                '<div class="rs-ceremony-subtitle">' + esc(histLookups.currentYear || '') + ' World Cup</div>' +
+                '<div class="rs-ceremony-title">THE FINAL</div>' +
+                '<div class="rs-ceremony-subtitle" style="margin-top: 8px;">' + esc(m.date || '') + '</div>' +
+            '</div>' +
+        '</div>';
+}
+
+// ----- PHASE: ANTICIPATION -----
+
+function renderAnticipation(m) {
+    // Sync F1 panel to scroll to the active teams as soon as match is announced
+    if (replayState.f1State) {
+        renderF1Panel(m);
+    }
+    const stage = normalizeStage(m.stage);
+    const isFinal = (stage === 'final');
+    const isThird = (stage === '3rd');
+    const trophyHtml = isFinal ? '<div class="rs-anticipation-trophy" style="margin-bottom: 6px;">🏆</div>' : '';
+    const stageBadgeText = isFinal ? '★ FINAL ★' : (isThird ? 'THIRD PLACE' : stageLabel(m.stage));
+    const refName = (m.referee && m.referee.name) ? m.referee.name : '—';
+    const venueName = m.stadium || '—';
+
+    return '' +
+        '<div class="rs-content rs-anticipation">' +
+            trophyHtml +
+            '<div class="rs-stage-badge">' + esc(stageBadgeText) + '</div>' +
+            '<div class="rs-match-date">' + esc(m.date || '') + '</div>' +
+            '<div class="rs-match-teams">' +
+                '<div class="rs-team-block">' + flagImg(m.homeTeam, 'lg') + '<div class="rs-tname">' + esc(m.homeTeam || '') + '</div></div>' +
+                '<div class="rs-vs">vs</div>' +
+                '<div class="rs-team-block">' + flagImg(m.awayTeam, 'lg') + '<div class="rs-tname">' + esc(m.awayTeam || '') + '</div></div>' +
+            '</div>' +
+            '<div class="rs-venue-line">' +
+                '<span class="rs-venue-name">' + esc(venueName) + '</span>' +
+                (refName !== '—' ? ' · Ref: <span class="rs-ref-name">' + esc(refName) + '</span>' : '') +
+            '</div>' +
+        '</div>';
+}
+
+// ----- PHASE: LINEUP / PITCH -----
+
+function renderLineup(m) {
+    return renderPitchStage(m, 'lineup');
+}
+
+function renderKickoff(m) {
+    return renderPitchStage(m, 'kickoff');
+}
+
+function renderEventPhase(m, event) {
+    // Update current score based on event minute (or 0 if no event)
+    if (event) {
+        replayState.currentScore = computeScoreAtMinute(m, event.minute);
+        // Add to revealed events log (avoid duplicates)
+        const events = replayState.currentMatchRevealedEvents || [];
+        const isDup = events.some(e => e.type === event.type && e.minute === event.minute &&
+            (e.scorer === event.scorer || e.player === event.player || e.on === event.on));
+        if (!isDup) {
+            events.push(event);
+            replayState.currentMatchRevealedEvents = events;
+        }
+        // Determine the active (current event) player for bright pulse highlight
+        let activeName = null, activeType = null;
+        if (event.type === 'goal') { activeName = event.scorer; activeType = 'goal'; }
+        else if (event.type === 'card-y') { activeName = event.player; activeType = 'card-y'; }
+        else if (event.type === 'card-r') { activeName = event.player; activeType = 'card-r'; }
+        else if (event.type === 'sub') { activeName = event.on; activeType = 'sub'; }
+
+        // Look up jersey number from lineup for more robust matching
+        // Uses fuzzy name matching: "Hierro" matches "Fernando Hierro"
+        // Search both lineups as fallback in case event.team is wrong/missing
+        let activeNumber = null;
+        let matchedName = null;
+        let matchedSide = event.team; // Track which team the player belongs to
+        if (activeName && m.lineups) {
+            const norm = (s) => (s || '').toLowerCase().trim().replace(/\s+/g, ' ');
+            // Fuzzy match: short name matches full name if it equals any token in the full name
+            // e.g. "Hierro" matches "Fernando Hierro", "Fortune" matches "Marc Fortune"
+            const fuzzyMatch = (lineupPlayer, shortName) => {
+                const full = norm(lineupPlayer.player || lineupPlayer.name || '');
+                const short = norm(shortName);
+                if (!full || !short) return false;
+                if (full === short) return true;
+                // Check if short name is one of the tokens in the full name
+                const tokens = full.split(' ');
+                return tokens.includes(short);
+            };
+            const searchLineup = (lineup) => {
+                if (!Array.isArray(lineup)) return null;
+                const found = lineup.find(p => fuzzyMatch(p, activeName));
+                return found ? found : null;
+            };
+            // Try the team indicated by event.team first, then fall back to both
+            const side = event.team;
+            let found = null;
+            if (side === 'home' || side === 'away') {
+                found = searchLineup(m.lineups[side]);
+            }
+            if (!found) {
+                // Search both — track which side matched
+                found = searchLineup(m.lineups.home);
+                if (found) {
+                    matchedSide = 'home';
+                } else {
+                    found = searchLineup(m.lineups.away);
+                    if (found) matchedSide = 'away';
+                }
+            }
+            if (found) {
+                activeNumber = found.number;
+                matchedName = found.player || found.name;
+            }
+        }
+
+        // Use matched full name if available for better rendering
+        // Store team side so jersey number matching can be scoped correctly
+        replayState.activeHighlight = activeName ? { name: activeName, matchedName: matchedName, type: activeType, number: activeNumber, team: matchedSide } : null;
+
+        // Accumulate past highlights (remain dim until match completes)
+        if (activeName) {
+            const highlights = replayState.currentMatchHighlights || [];
+            const norm = (s) => (s || '').toLowerCase().trim().replace(/\s+/g, ' ');
+            const normActive = norm(activeName);
+            if (!highlights.some(h => norm(h.name) === normActive)) {
+                highlights.push({ name: activeName, matchedName: matchedName, type: activeType, number: activeNumber, team: matchedSide });
+                replayState.currentMatchHighlights = highlights;
+            }
+        }
+    } else {
+        replayState.activeHighlight = null;
+    }
+
+    // Process substitution and red card events for player state changes
+    // With bench: sub shows incoming on bench with green arrow, outgoing with red arrow
+    // Red card: player moved to bench with flash animation
+    if (event && replayState.matchPlayerState) {
+        const ps = replayState.matchPlayerState;
+        const norm = (s) => (s || '').toLowerCase().trim().replace(/\s+/g, ' ');
+        const fuzzyMatchName = (fullName, shortName) => {
+            const full = norm(fullName);
+            const short = norm(shortName);
+            if (!full || !short) return false;
+            if (full === short) return true;
+            return full.split(' ').includes(short);
+        };
+        const findInOnPitch = (onPitchArr, eventName) => {
+            return onPitchArr.find(n => fuzzyMatchName(n, eventName));
+        };
+
+        if (event.type === 'sub' && event.on && event.off) {
+            const side = event.team;
+            if (side === 'home' || side === 'away') {
+                const teamState = ps[side];
+                const lineup = m.lineups[side] || [];
+                const onPlayerData = lineup.find(p => fuzzyMatchName(p.player || p.name, event.on));
+                const offPlayerData = lineup.find(p => fuzzyMatchName(p.player || p.name, event.off));
+                const onFullName = onPlayerData ? (onPlayerData.player || onPlayerData.name) : event.on;
+
+                // Compute off player's pitch position BEFORE moving anyone
+                // This is used for arrow rendering
+                let offPitchX = 0, offPitchY = 0;
+                const formation = m.formations ? m.formations[side] : '';
+                const pitchPositions = computePlayerPositions(
+                    groupByPos(lineup.filter(p => teamState.onPitch.includes(p.player)), formation),
+                    side
+                );
+                const offPos = pitchPositions.find(p => fuzzyMatchName(p.player.player, event.off));
+                if (offPos) { offPitchX = offPos.x; offPitchY = offPos.y; }
+
+                // Set pending sub with pre-computed position (for arrow rendering)
+                if (offPlayerData && onPlayerData) {
+                    teamState.pendingSub = {
+                        off: offPlayerData, on: onPlayerData, onFullName: onFullName,
+                        offX: offPitchX, offY: offPitchY
+                    };
+                }
+            }
+        } else if (event.type === 'card-r' && event.player) {
+            const side = event.team;
+            if (side === 'home' || side === 'away') {
+                const teamState = ps[side];
+                const lineup = m.lineups[side] || [];
+                const playerData = lineup.find(p => fuzzyMatchName(p.player || p.name, event.player));
+
+                // Remove from onPitch
+                const playerInPitch = findInOnPitch(teamState.onPitch, event.player);
+                if (playerInPitch) {
+                    teamState.onPitch = teamState.onPitch.filter(n => n !== playerInPitch);
+                }
+                // Add to benched with flash animation
+                if (playerData && !teamState.benched.find(b => fuzzyMatchName(b.player.player, event.player))) {
+                    teamState.benched.push({ player: playerData, reason: 'red', animClass: 'anim-bench-flash' });
+                }
+            }
+        }
+    }
+
+    // Auto-scroll F1 panel to active teams during the event (not just after match)
+    if (replayState.f1State) {
+        renderF1Panel(m);
+    }
+    return renderPitchStage(m, 'event', event);
+}
+
+function renderPitchStage(m, phaseName, event) {
+    const scoreH = replayState.currentScore.home;
+    const scoreA = replayState.currentScore.away;
+    const formationH = (m.formations && m.formations.home) ? m.formations.home : '';
+    const formationA = (m.formations && m.formations.away) ? m.formations.away : '';
+    const formationLabel = (formationH || formationA) ? (esc(formationH) + ' vs ' + esc(formationA)) : '';
+    const flashHtml = event ? renderEventFlash(event) : '';
+    // Accumulated past highlights + current active highlight
+    const pastHighlights = replayState.currentMatchHighlights || [];
+    const activeHighlight = replayState.activeHighlight || null;
+
+    // Build event log from revealed events
+    const revealedEvents = replayState.currentMatchRevealedEvents || [];
+    const homeEvents = revealedEvents.filter(e => e.team === 'home');
+    const awayEvents = revealedEvents.filter(e => e.team === 'away');
+
+    const renderEventLogItem = (e) => {
+        let icon = '', text = '';
+        if (e.type === 'goal') { icon = '⚽'; text = e.scorer || ''; }
+        else if (e.type === 'card-y') { icon = '🟨'; text = e.player || ''; }
+        else if (e.type === 'card-r') { icon = '🟥'; text = e.player || ''; }
+        else if (e.type === 'sub') { icon = '↔'; text = (e.on || '') + '↻'; }
+        // Build minute display: 90+1' format for added time
+        let minDisplay = '';
+        if (e.minute != null) {
+            minDisplay = e.minute + "'";
+            if (e.addedMinute != null && e.addedMinute > 0) {
+                minDisplay = e.minute + '+' + e.addedMinute + "'";
+            }
+        }
+        // Add event type suffix (penalty, own-goal, etc)
+        let typeSuffix = '';
+        if (e.eventType) {
+            const typeLabels = { 'penalty': ' (pen)', 'own-goal': ' (OG)', 'own goal': ' (OG)' };
+            typeSuffix = typeLabels[(e.eventType || '').toLowerCase()] || ' (' + e.eventType + ')';
+        }
+        return '<div class="rs-elog-item ' + e.type + '">' +
+            '<span class="rs-elog-min">' + minDisplay + '</span>' +
+            '<span class="rs-elog-icon">' + icon + '</span>' +
+            '<span class="rs-elog-text">' + esc(text + typeSuffix) + '</span>' +
+        '</div>';
+    };
+
+    return '' +
+        '<div class="rs-content rs-pitch-phase">' +
+            '<div class="rs-score-and-log">' +
+                '<div class="rs-team-col left">' +
+                    '<div class="rs-team-header">' + flagImg(m.homeTeam) + '<span class="rs-th-name">' + esc(m.homeTeam || '') + '</span></div>' +
+                    '<div class="rs-event-list">' + homeEvents.map(renderEventLogItem).join('') + '</div>' +
+                '</div>' +
+                '<div class="rs-score-center" id="rs-score-display">' + scoreH + ' - ' + scoreA + '</div>' +
+                '<div class="rs-team-col right">' +
+                    '<div class="rs-team-header"><span class="rs-th-name">' + esc(m.awayTeam || '') + '</span>' + flagImg(m.awayTeam) + '</div>' +
+                    '<div class="rs-event-list">' + awayEvents.map(renderEventLogItem).join('') + '</div>' +
+                '</div>' +
+            '</div>' +
+            // Match stage (Group A, Round of 16, etc) — static position between scoreboard and formation
+            '<div style="font-size: 0.62rem; color: #FFD700; letter-spacing: 2px; text-transform: uppercase; position: absolute; top: 95px; left: 50%; transform: translateX(-50%);">' + esc(stageLabel(m.stage) || m.stage || '') + '</div>' +
+            (formationLabel ? '<div style="font-size: 0.6rem; color: #888; letter-spacing: 1px; position: absolute; top: 110px; left: 50%; transform: translateX(-50%);">' + formationLabel + '</div>' : '') +
+            flashHtml +
+            '<div class="rs-pitch-anchor">' +
+                renderPitchSVG(m, phaseName, event, pastHighlights, activeHighlight) +
+            '</div>' +
+        '</div>';
+}
+
+function renderEventFlash(event) {
+    if (!event) return '';
+    let icon = '', text = '', cls = 'rs-event-flash';
+    if (event.type === 'goal') {
+        icon = '⚽'; cls += ' goal';
+        const team = event.team === 'home' ? replayState.currentMatch.homeTeam : replayState.currentMatch.awayTeam;
+        text = 'GOAL! ' + (event.scorer || '') + ' (' + (team || '') + ')';
+    } else if (event.type === 'card-y') {
+        icon = '🟨'; cls += ' card-y';
+        text = 'Yellow · ' + (event.player || '');
+    } else if (event.type === 'card-r') {
+        icon = '🟥'; cls += ' card-r';
+        text = 'Red · ' + (event.player || '');
+    } else if (event.type === 'sub') {
+        icon = '↔'; cls += ' sub';
+        text = 'Sub · ' + (event.on || '') + ' for ' + (event.off || '');
+    }
+    // Add event type suffix (penalty, own-goal, etc)
+    if (event.eventType) {
+        const typeLabels = { 'penalty': ' (pen)', 'own-goal': ' (OG)', 'own goal': ' (OG)' };
+        text += typeLabels[(event.eventType || '').toLowerCase()] || ' (' + event.eventType + ')';
+    }
+    // Build minute display: 90+1' format for added time
+    let minTxt = '';
+    if (event.minute != null) {
+        minTxt = event.minute + "'";
+        if (event.addedMinute != null && event.addedMinute > 0) {
+            minTxt = event.minute + '+' + event.addedMinute + "'";
+        }
+    }
+    return '<div class="' + cls + ' visible">' + minTxt + ' ' + icon + ' ' + esc(text) + '</div>';
+}
+
+// ----- POSITION CLASSIFICATION (global — used by renderPitchSVG and renderEventPhase) -----
+
+// FIFA-standard position classification
+function categorizePos(pos) {
+    const p = (pos || '').toUpperCase().trim();
+    if (!p) return 'MF';
+    const exact = {
+        GK: 'GK', G: 'GK',
+        CB: 'DF', RB: 'DF', LB: 'DF', RWB: 'DF', LWB: 'DF', SW: 'DF', DF: 'DF', D: 'DF',
+        CDM: 'MF', DM: 'MF', CM: 'MF', CAM: 'MF', AM: 'MF',
+        RM: 'MF', LM: 'MF', RW: 'MF', LW: 'MF', MF: 'MF', M: 'MF',
+        ST: 'FW', CF: 'FW', RF: 'FW', LF: 'FW', SS: 'FW', FW: 'FW', F: 'FW',
+    };
+    if (exact[p]) return exact[p];
+    if (p.indexOf('GK') >= 0 || p.indexOf('GOAL') >= 0) return 'GK';
+    if (p.indexOf('BACK') >= 0 || p.indexOf('DEF') >= 0 || p.indexOf('SWEEP') >= 0) return 'DF';
+    if (p.indexOf('MID') >= 0 || p.indexOf('WING') >= 0) return 'MF';
+    if (p.indexOf('STR') >= 0 || p.indexOf('FORW') >= 0) return 'FW';
+    return 'MF';
+}
+
+function posRank(pos) {
+    const p = (pos || '').toUpperCase().trim();
+    const ranks = {
+        GK: 0, G: 0, SW: 1, CB: 2,
+        RB: 3, LB: 3, RWB: 3, LWB: 3, DF: 3, D: 3,
+        CDM: 4, DM: 4, CM: 5, RM: 6, LM: 6,
+        CAM: 7, AM: 7, RW: 7, LW: 7, MF: 5, M: 5,
+        SS: 8, CF: 9, RF: 10, LF: 10, ST: 11, FW: 9, F: 9,
+    };
+    if (ranks[p] != null) return ranks[p];
+    if (p.indexOf('GK') >= 0) return 0;
+    if (p.indexOf('SWEEP') >= 0) return 1;
+    if (p.indexOf('BACK') >= 0 || p.indexOf('DEF') >= 0) return 3;
+    if (p.indexOf('DM') >= 0) return 4;
+    if (p.indexOf('AM') >= 0 || p.indexOf('WING') >= 0) return 7;
+    if (p.indexOf('MID') >= 0) return 5;
+    if (p.indexOf('SS') >= 0) return 8;
+    if (p.indexOf('STR') >= 0) return 11;
+    if (p.indexOf('FORW') >= 0) return 9;
+    return 5;
+}
+
+function parseFormationString(formationStr) {
+    if (!formationStr) return null;
+    const parts = formationStr.split('-').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+    if (parts.length < 3) return null;
+    return { df: parts[0], mf: parts.slice(1, -1).reduce((a, b) => a + b, 0), fw: parts[parts.length - 1] };
+}
+
+function groupByPos(arr, formationStr) {
+    const groups = { GK: [], DF: [], MF: [], FW: [] };
+    const gk = [], outfield = [];
+    arr.forEach(p => { (categorizePos(p.position) === 'GK' ? gk : outfield).push(p); });
+    groups.GK = gk;
+    const f = parseFormationString(formationStr);
+    if (f) {
+        const sorted = outfield.slice().sort((a, b) => posRank(a.position) - posRank(b.position));
+        let i = 0;
+        groups.DF = sorted.slice(i, i+f.df); i += f.df;
+        groups.MF = sorted.slice(i, i+f.mf); i += f.mf;
+        groups.FW = sorted.slice(i, i+f.fw); i += f.fw;
+        if (i < sorted.length) groups.MF = groups.MF.concat(sorted.slice(i));
+    } else {
+        outfield.forEach(p => { groups[categorizePos(p.position)].push(p); });
+    }
+    return groups;
+}
+
+// ----- TRAPEZOID PITCH SVG -----
+
+function renderPitchSVG(m, phaseName, event, pastHighlights, activeHighlight) {
+    const homeLineup = (m.lineups && Array.isArray(m.lineups.home)) ? m.lineups.home : [];
+    const awayLineup = (m.lineups && Array.isArray(m.lineups.away)) ? m.lineups.away : [];
+
+    // Filter to only starters currently on pitch (excludes subbed-off and red-carded players)
+    const playerState = replayState.matchPlayerState;
+    const homeOnPitch = playerState ? playerState.home.onPitch : null;
+    const awayOnPitch = playerState ? playerState.away.onPitch : null;
+    const homeStarters = homeLineup.filter(p => p.starter && (!homeOnPitch || homeOnPitch.includes(p.player)));
+    const awayStarters = awayLineup.filter(p => p.starter && (!awayOnPitch || awayOnPitch.includes(p.player)));
+    // Also include subbed-on players who aren't starters
+    if (homeOnPitch) {
+        homeOnPitch.forEach(name => {
+            if (!homeStarters.find(p => p.player === name)) {
+                const sub = homeLineup.find(p => p.player === name);
+                if (sub) homeStarters.push(sub);
+            }
+        });
+    }
+    if (awayOnPitch) {
+        awayOnPitch.forEach(name => {
+            if (!awayStarters.find(p => p.player === name)) {
+                const sub = awayLineup.find(p => p.player === name);
+                if (sub) awayStarters.push(sub);
+            }
+        });
+    }
+    const hasLineupData = homeStarters.length > 0 || awayStarters.length > 0;
+
+    // Build player positions (empty arrays if no lineup data)
+    let homePlayers = [], awayPlayers = [];
+    if (hasLineupData) {
+        const homeFormation = (m.formations && m.formations.home) ? m.formations.home : '';
+        const awayFormation = (m.formations && m.formations.away) ? m.formations.away : '';
+        const homeGroups = groupByPos(homeStarters, homeFormation);
+        const awayGroups = groupByPos(awayStarters, awayFormation);
+        homePlayers = computePlayerPositions(homeGroups, 'home');
+        awayPlayers = computePlayerPositions(awayGroups, 'away');
+    }
+
+    // User's pitch SVG path (Option B: green fill + white outline)
+    // viewBox 0 0 225.47 78.74 — pitch spans full width, ~2.86:1 ratio
+    // The path uses internal coords y=112-191, shifted by translate(7.246,-111.982) to y=0-79
+    const pitchPath = 'm -7.2461036,190.35621 c 0.07544,-0.19902 1.1287448,-3.61864 2.3406764,-7.59914 1.2119316,-3.98053 2.6383492,-8.60514 3.169817,-10.27695 0.5314678,-1.67181 1.49967453,-4.79832 2.15157042,-6.9478 0.65189578,-2.14947 1.61982628,-5.27598 2.15095588,-6.94779 0.8204979,-2.58265 4.3742171,-14.13664 12.6648199,-41.17637 l 1.663095,-5.42417 88.126129,-9.9e-4 88.12615,-0.001 1.05247,3.25407 c 0.57888,1.78974 2.29769,7.1622 3.81961,11.93881 4.00494,12.56965 8.9862,28.11638 9.60012,29.96236 0.29124,0.87571 1.58466,4.91411 2.87427,8.97422 1.2896,4.06014 2.66443,8.35909 3.05518,9.55322 1.71044,5.22717 4.67489,14.63389 4.67489,14.83423 0,0.12063 -50.76156,0.21934 -112.80346,0.21934 -90.124862,0 -112.7758817,-0.0728 -112.6662936,-0.36187 z m 7.08888588,-0.85292 c 0,-0.19046 -0.33699298,-0.8375 -0.74887343,-1.43787 -0.75781775,-1.1046 -3.48466795,-2.7594 -3.85829325,-2.34142 -0.1069155,0.11959 -0.4224767,0.93396 -0.7012468,1.80967 -0.2787701,0.8757 -0.5663506,1.75505 -0.6390677,1.95406 -0.1005272,0.27514 0.5963024,0.36187 2.9076341,0.36187 2.1679713,0 3.03984708,-0.0994 3.03984708,-0.34631 z m 105.13647772,-16.1252 -0.10158,-16.47151 -1.71953,-0.19267 c -2.68453,-0.30077 -4.117318,-0.71376 -6.591549,-1.89993 -3.692811,-1.77039 -5.908945,-4.41836 -6.336814,-7.57164 -0.64056,-4.72072 5.072554,-9.83116 11.782013,-10.53911 0.94574,-0.0998 1.97746,-0.21313 2.29271,-0.25185 0.56114,-0.069 0.57486,-0.31734 0.65335,-11.83845 l 0.0801,-11.76805 -34.900761,-0.0235 c -19.195421,-0.0129 -37.718771,-0.0789 -41.163003,-0.14663 l -6.26224,-0.12305 -0.57134,0.7337 c -0.809637,1.0397 -2.55533,1.8611 -4.079086,1.91933 l -1.303675,0.0498 -0.734656,2.48624 c -0.404061,1.36742 -1.169942,3.82152 -1.701957,5.45352 l -0.967304,2.96729 h 13.305608 c 12.131941,0 13.305608,0.0418 13.305608,0.47397 0,0.26069 -0.532832,2.81114 -1.184072,5.66768 l -1.184073,5.19371 1.163558,1.20774 c 1.529065,1.58712 2.20037,3.32759 2.204422,5.71532 0.0059,3.48596 -2.072724,6.40541 -5.357409,7.52448 l -1.5175,0.517 -1.652801,7.04207 c -0.909039,3.87315 -1.753053,7.49803 -1.875588,8.0553 l -0.222789,1.01322 -15.019992,0.14474 -15.01999129,0.14475 -0.82590238,2.60543 c -2.07783373,6.55486 -3.92914493,12.69431 -3.92914493,13.03013 0,0.20264 0.3331277,0.45288 0.7402841,0.55611 1.8730419,0.47487 3.87224856,2.34861 4.28703804,4.018 l 0.19341755,0.77844 H 52.922766 105.08084 Z M 210.468,188.89072 c 0.4135,-1.26563 2.1278,-2.92013 3.79625,-3.66384 l 1.34249,-0.59841 -0.70605,-2.09367 c -0.38831,-1.15152 -1.54786,-4.73053 -2.57679,-7.95334 l -1.87076,-5.85967 -15.24456,-0.075 -15.24458,-0.075 -0.64233,-2.8949 c -0.35328,-1.59221 -1.19155,-5.21687 -1.86283,-8.05482 l -1.22049,-5.15988 -1.5175,-0.5175 c -5.52834,-1.88524 -7.26425,-8.79366 -3.28846,-13.08716 l 1.32214,-1.42778 -1.20105,-5.12761 c -0.66057,-2.82019 -1.19861,-5.35559 -1.19563,-5.63422 0.005,-0.47507 0.82631,-0.50661 13.18853,-0.50661 7.2507,0 13.18309,-0.0497 13.18309,-0.11037 0,-0.14356 -3.04756,-9.72053 -3.30429,-10.38371 -0.14574,-0.3765 -0.52237,-0.5066 -1.4665,-0.5066 -1.44844,0 -3.28628,-0.83857 -3.95687,-1.80544 l -0.45447,-0.65524 h -40.83297 -40.83295 l -3.5e-4,11.94153 -3.3e-4,11.94152 h 1.38708 c 1.93798,0 5.49934,0.97417 7.50088,2.05178 2.1036,1.13257 4.04648,3.04191 4.91452,4.82969 0.89735,1.84816 0.90903,4.63313 0.0265,6.32812 -1.84501,3.54357 -6.5949,6.24244 -12.18113,6.92127 l -1.64787,0.20025 v 16.46766 16.46766 h 52.13698 52.13699 z m 6.60929,0.76229 c 0,-0.10809 -0.27882,-1.07101 -0.61958,-2.13978 l -0.61957,-1.9432 -0.88501,0.29808 c -1.63754,0.55151 -3.88802,2.72755 -3.89314,3.76437 -5.8e-4,0.11942 1.35306,0.21712 3.00812,0.21712 1.65505,0 3.00918,-0.0883 3.00918,-0.19659 z M 30.660491,163.28877 c 0.582303,-2.50774 1.505306,-6.44843 2.051119,-8.75712 0.545813,-2.3087 1.484229,-6.34711 2.085369,-8.97425 2.060539,-9.00506 4.041069,-17.51439 4.195004,-18.02379 0.145652,-0.48199 -0.548493,-0.50551 -12.822416,-0.43425 l -12.976404,0.0754 -1.222874,3.90814 c -0.672581,2.14948 -1.295849,4.24358 -1.385041,4.65354 l -0.16217,0.74543 4.525527,-0.091 c 2.489041,-0.05 4.792428,-0.0182 5.118641,0.0708 0.570419,0.15558 0.483639,0.54864 -2.268179,10.27386 l -2.861292,10.1121 H 9.4381504 3.9385261 l -0.6181875,2.09881 c -0.3400042,1.15434 -1.0680988,3.52911 -1.6179891,5.27727 -0.5498902,1.74817 -0.99980059,3.27884 -0.99980059,3.40153 0,0.12268 6.50232229,0.22306 14.44960509,0.22306 h 14.449605 z m 179.091009,3.86726 c -0.0946,-0.38072 -0.85845,-2.8233 -1.69744,-5.42796 l -1.52545,-4.73576 -5.56821,-0.0784 -5.56824,-0.0782 -2.87249,-10.13488 c -1.57988,-5.57419 -2.79432,-10.17989 -2.69878,-10.23488 0.0955,-0.055 2.39839,-0.0814 5.1174,-0.0588 3.18958,0.0266 4.94193,-0.0632 4.93878,-0.25323 -0.002,-0.16193 -0.62163,-2.24851 -1.37546,-4.63681 l -1.37058,-4.34238 -12.97425,-0.0754 c -12.27088,-0.0713 -12.96604,-0.0476 -12.82324,0.43426 0.0831,0.28026 0.4876,2.00769 0.89902,3.83872 0.4114,1.83102 1.19543,5.21808 1.74228,7.52677 2.16535,9.14175 6.70564,28.67612 6.70564,28.8507 0,0.0541 6.57968,0.0984 14.6215,0.0984 h 14.6215 z M 15.276983,152.57757 c 0.49935,-1.87084 1.661836,-6.00694 2.583301,-9.19135 0.921467,-3.1844 1.629062,-5.87548 1.572438,-5.98018 -0.05663,-0.10471 -2.193285,-0.16983 -4.748132,-0.14475 l -4.645174,0.0456 -1.2498133,4.05287 c -0.6873967,2.22909 -1.9499183,6.27948 -2.8056041,9.00088 -0.8556847,2.72139 -1.5557914,5.09884 -1.5557914,5.28321 0,0.2411 1.3957637,0.33524 4.9704335,0.33524 h 4.9704323 z m 89.623197,-0.39633 0.15198,-3.65314 -1.01866,-0.60711 c -1.34431,-0.80118 -1.39483,-1.85152 -0.12655,-2.63062 l 0.89213,-0.54803 0.0708,-3.64535 0.0708,-3.64534 -1.32111,0.004 c -4.700205,0.0152 -10.295114,3.08086 -11.91472,6.5285 -2.106301,4.48366 1.862787,9.67487 8.58749,11.23165 4.75694,1.10126 4.4268,1.31868 4.60793,-3.03485 z m 5.42267,3.04116 c 6.52374,-1.59649 10.32847,-6.14139 8.86559,-10.59029 -1.22194,-3.71617 -7.07833,-7.15133 -12.23299,-7.17543 l -1.07471,-0.005 v 3.76339 c 0,2.42501 0.10658,3.76339 0.29961,3.76339 0.1648,0 0.62117,0.3248 1.01417,0.72179 0.59308,0.59909 0.66094,0.823 0.39918,1.31706 -0.17347,0.32739 -0.62983,0.73999 -1.01417,0.91689 -0.69006,0.31758 -0.69879,0.37008 -0.69879,4.201 v 3.87941 l 1.3613,-0.18568 c 0.7487,-0.10207 2.13508,-0.37504 3.08081,-0.6065 z m 95.79317,0.39484 c -0.0727,-0.19903 -0.33541,-1.01322 -0.58376,-1.80933 -2.62702,-8.42121 -4.86573,-15.46468 -5.0839,-15.99512 -0.26477,-0.64375 -0.32778,-0.65102 -4.93108,-0.568 -3.02713,0.0545 -4.64356,0.1896 -4.60776,0.38489 0.0591,0.32205 2.49324,9.08252 3.85184,13.86231 0.45257,1.59219 0.9032,3.25316 1.00141,3.69101 l 0.17857,0.7961 h 5.15345 c 4.00221,0 5.12391,-0.0808 5.02123,-0.36186 z M 37.068958,150.24693 c 2.479152,-1.53835 3.731541,-5.18747 2.776831,-8.09094 -0.56297,-1.71211 -2.320672,-3.93899 -2.570686,-3.25689 -0.08755,0.23883 -0.679187,2.71399 -1.314772,5.50033 -0.635587,2.78636 -1.275713,5.50148 -1.422503,6.0336 -0.261245,0.94701 -0.25061,0.96354 0.502494,0.78138 0.423163,-0.10231 1.33605,-0.53773 2.028636,-0.96748 z m 138.422602,-0.9985 c -0.27394,-1.15435 -0.90001,-3.85749 -1.39127,-6.00696 -1.19969,-5.24914 -1.03637,-4.97307 -2.16731,-3.66335 -1.06085,1.22851 -1.85629,3.25027 -1.85629,4.71803 0,1.29916 0.77597,3.50486 1.63174,4.6382 0.64886,0.85929 3.19877,2.41288 3.9603,2.41288 0.22051,0 0.16509,-0.65654 -0.17717,-2.0988 z M 20.310894,113.74878 c 1.403975,-0.79694 1.171502,-1.05615 -0.852764,-0.95083 -1.695242,0.0881 -1.906716,0.16835 -2.150086,0.81494 -0.148455,0.39443 -0.269917,0.77532 -0.269917,0.84645 0,0.27743 2.481308,-0.2613 3.272767,-0.71056 z m 172.515456,0.0369 c -0.10365,-0.43784 -0.24746,-0.90169 -0.31968,-1.03072 -0.195,-0.34847 -3.82446,-0.1254 -3.71104,0.22809 0.17451,0.54399 2.02037,1.26663 3.9987,1.56546 0.12122,0.0182 0.13563,-0.32496 0.032,-0.76283 z';
+
+    // Player icons — positioned in the SVG's 225×79 coordinate space
+    // Scale up the radius and font for this coordinate space
+    const homeIcons = homePlayers.map(p => renderPlayerIcon(p, 'home', pastHighlights, activeHighlight));
+    const awayIcons = awayPlayers.map(p => renderPlayerIcon(p, 'away', pastHighlights, activeHighlight));
+
+    const noLineupMsg = !hasLineupData
+        ? '<text x="112" y="42" text-anchor="middle" fill="rgba(255,255,255,0.35)" font-size="3.5" font-style="italic">Lineup data not available</text>'
+        : '';
+
+    const phaseLabelHtml = phaseName === 'kickoff'
+        ? '<text x="112" y="42" text-anchor="middle" fill="rgba(255,215,0,0.4)" font-size="5" font-weight="700" letter-spacing="2">KICKOFF</text>'
+        : '';
+
+    // Pitch + Bench combined SVG
+    // Bench Y-Pan = -84 (bench above pitch), spread = 75, arrow length = 11
+    const benchY = REPLAY_PITCH.viewBoxH + REPLAY_BENCH_PARAMS.yPan; // 78.74 - 84 = -5.26
+    const benchSpread = REPLAY_BENCH_PARAMS.spread;
+    const arrowLength = REPLAY_BENCH_PARAMS.arrowLength;
+    const hasBench = playerState && (playerState.home.benched.length > 0 || playerState.away.benched.length > 0 || playerState.home.pendingSub || playerState.away.pendingSub);
+    const viewBoxMinY = hasBench ? Math.min(0, benchY - 5) : 0;
+    const viewBoxMaxY = hasBench ? Math.max(REPLAY_PITCH.viewBoxH, benchY + 8) : REPLAY_PITCH.viewBoxH;
+    const totalViewBoxH = viewBoxMaxY - viewBoxMinY;
+
+    // Draw arrow helper
+    const drawArrow = (x1, y1, x2, y2, color, w) => {
+        const angle = Math.atan2(y2 - y1, x2 - x1);
+        const headLen = 2, headAngle = 0.4;
+        const hx1 = x2 - headLen * Math.cos(angle - headAngle);
+        const hy1 = y2 - headLen * Math.sin(angle - headAngle);
+        const hx2 = x2 - headLen * Math.cos(angle + headAngle);
+        const hy2 = y2 - headLen * Math.sin(angle + headAngle);
+        return '<line x1="'+x1.toFixed(2)+'" y1="'+y1.toFixed(2)+'" x2="'+x2.toFixed(2)+'" y2="'+y2.toFixed(2)+'" stroke="'+color+'" stroke-width="'+(w||0.4)+'"/>' +
+               '<line x1="'+x2.toFixed(2)+'" y1="'+y2.toFixed(2)+'" x2="'+hx1.toFixed(2)+'" y2="'+hy1.toFixed(2)+'" stroke="'+color+'" stroke-width="'+(w||0.4)+'"/>' +
+               '<line x1="'+x2.toFixed(2)+'" y1="'+y2.toFixed(2)+'" x2="'+hx2.toFixed(2)+'" y2="'+hy2.toFixed(2)+'" stroke="'+color+'" stroke-width="'+(w||0.4)+'"/>';
+    };
+
+    // Build bench HTML
+    let benchHtml = '';
+    let pendingSubHtml = '';
+    if (playerState) {
+        // Pending sub visualization (incoming on bench + arrows)
+        // Uses PRE-COMPUTED off player position (no computePitchPositions call here)
+        ['home', 'away'].forEach(side => {
+            const ts = playerState[side];
+            if (ts.pendingSub) {
+                const psub = ts.pendingSub;
+                // Place incoming player at center X, bench Y (above pitch)
+                const incomingX = REPLAY_PITCH.viewBoxW / 2;
+                const incomingY = benchY;
+                const inFill = side === 'home' ? 'rgba(140,100,30,0.95)' : 'rgba(40,40,50,0.95)';
+                // Incoming player at bench center
+                pendingSubHtml += '<circle cx="'+incomingX.toFixed(2)+'" cy="'+incomingY.toFixed(2)+'" r="4" fill="'+inFill+'" stroke="#CAEEC2" stroke-width="1.2" opacity="0.9"/>';
+                pendingSubHtml += '<text x="'+incomingX.toFixed(2)+'" y="'+incomingY.toFixed(2)+'" text-anchor="middle" dominant-baseline="central" fill="#fff" font-size="2.8" font-weight="700" font-family="Courier New">'+(psub.on.number||'')+'</text>';
+                // Arrows using pre-computed offX/offY
+                const offX = psub.offX, offY = psub.offY;
+                if (offX !== 0 || offY !== 0) {
+                    const iconR = 3.6;
+                    const dx1 = offX - incomingX, dy1 = offY - incomingY;
+                    const d1 = Math.sqrt(dx1*dx1+dy1*dy1);
+                    if (d1 > 0) {
+                        const nx1 = dx1/d1, ny1 = dy1/d1;
+                        const gFrac = Math.min(1, arrowLength / d1);
+                        pendingSubHtml += drawArrow(incomingX + nx1*iconR, incomingY + ny1*iconR, incomingX + nx1*iconR + dx1*gFrac, incomingY + ny1*iconR + dy1*gFrac, '#CAEEC2', 0.4);
+                    }
+                    const dx2 = incomingX - offX, dy2 = incomingY - offY;
+                    const d2 = Math.sqrt(dx2*dx2+dy2*dy2);
+                    if (d2 > 0) {
+                        const nx2 = dx2/d2, ny2 = dy2/d2;
+                        const rFrac = Math.min(1, arrowLength / d2);
+                        pendingSubHtml += drawArrow(offX + nx2*iconR, offY + ny2*iconR, offX + nx2*iconR + dx2*rFrac, offY + ny2*iconR + dy2*rFrac, '#ff8080', 0.4);
+                    }
+                }
+            }
+        });
+
+        // Benched players
+        ['home', 'away'].forEach(side => {
+            const ts = playerState[side];
+            const xStart = (side === 'home' ? 20 : 225.47 - 20 - benchSpread) + REPLAY_BENCH_PARAMS.xPan;
+            ts.benched.forEach((bp, i) => {
+                const x = xStart + i * (benchSpread / Math.max(ts.benched.length, 1)) + benchSpread / (ts.benched.length + 1);
+                const isRed = bp.reason === 'red';
+                const fill = side === 'home' ? 'rgba(140,100,30,0.95)' : 'rgba(40,40,50,0.95)';
+                const stroke = isRed ? '#ff8080' : '#9bc1ff';
+                const opacity = isRed ? '0.35' : '0.5';
+                const animCls = bp.animClass ? ' class="'+bp.animClass+'"' : '';
+                benchHtml += '<g class="rs-player-icon" data-player-name="'+esc(bp.player.player||bp.player.name||'')+'" data-player-pos="'+esc(bp.player.position||'')+'" data-player-side="'+side+'" style="cursor:pointer; pointer-events: auto;"><circle cx="'+x.toFixed(2)+'" cy="'+benchY.toFixed(2)+'" r="3.6" fill="'+fill+'" stroke="'+stroke+'" stroke-width="0.5" opacity="'+opacity+'"'+animCls+'/>';
+                benchHtml += '<text x="'+x.toFixed(2)+'" y="'+benchY.toFixed(2)+'" text-anchor="middle" dominant-baseline="central" fill="#fff" font-size="2.8" font-weight="700" font-family="Courier New">'+(bp.player.number||'')+'</text>';
+                if (isRed) benchHtml += '<text x="'+x.toFixed(2)+'" y="'+(benchY+5).toFixed(2)+'" text-anchor="middle" fill="rgba(255,128,128,0.7)" font-size="2" font-style="italic">RED</text>';
+            });
+        });
+    }
+
+    // Separator line when bench exists
+    const separatorHtml = hasBench ? '<line x1="0" y1="'+REPLAY_PITCH.viewBoxH.toFixed(2)+'" x2="225.47" y2="'+REPLAY_PITCH.viewBoxH.toFixed(2)+'" stroke="rgba(255,255,255,0.1)" stroke-width="0.3" stroke-dasharray="1,1"/>' : '';
+
+    return '<svg class="rs-pitch-svg" viewBox="0 ' + viewBoxMinY.toFixed(2) + ' 225.47 ' + totalViewBoxH.toFixed(2) + '" preserveAspectRatio="xMidYMid meet">' +
+        '<g transform="translate(7.2464987,-111.982)">' +
+            '<path fill="#3a6e4d" stroke="rgba(255,255,255,0.5)" stroke-width="0.15" d="' + pitchPath + '"/>' +
+        '</g>' +
+        phaseLabelHtml +
+        noLineupMsg +
+        awayIcons.join('') +
+        homeIcons.join('') +
+        separatorHtml +
+        benchHtml +
+        pendingSubHtml +
+    '</svg>';
+}
+
+// Pitch geometry constants (from VLM analysis of the user's SVG)
+// Global pitch SVG path (shared by replay and static formation pitch)
+// Moved to global scope so renderFormationPitch can access it
+const PITCH_PATH_GLOBAL = 'm -7.2461036,190.35621 c 0.07544,-0.19902 1.1287448,-3.61864 2.3406764,-7.59914 1.2119316,-3.98053 2.6383492,-8.60514 3.169817,-10.27695 0.5314678,-1.67181 1.49967453,-4.79832 2.15157042,-6.9478 0.65189578,-2.14947 1.61982628,-5.27598 2.15095588,-6.94779 0.8204979,-2.58265 4.3742171,-14.13664 12.6648199,-41.17637 l 1.663095,-5.42417 88.126129,-9.9e-4 88.12615,-0.001 1.05247,3.25407 c 0.57888,1.78974 2.29769,7.1622 3.81961,11.93881 4.00494,12.56965 8.9862,28.11638 9.60012,29.96236 0.29124,0.87571 1.58466,4.91411 2.87427,8.97422 1.2896,4.06014 2.66443,8.35909 3.05518,9.55322 1.71044,5.22717 4.67489,14.63389 4.67489,14.83423 0,0.12063 -50.76156,0.21934 -112.80346,0.21934 -90.124862,0 -112.7758817,-0.0728 -112.6662936,-0.36187 z m 7.08888588,-0.85292 c 0,-0.19046 -0.33699298,-0.8375 -0.74887343,-1.43787 -0.75781775,-1.1046 -3.48466795,-2.7594 -3.85829325,-2.34142 -0.1069155,0.11959 -0.4224767,0.93396 -0.7012468,1.80967 -0.2787701,0.8757 -0.5663506,1.75505 -0.6390677,1.95406 -0.1005272,0.27514 0.5963024,0.36187 2.9076341,0.36187 2.1679713,0 3.03984708,-0.0994 3.03984708,-0.34631 z m 105.13647772,-16.1252 -0.10158,-16.47151 -1.71953,-0.19267 c -2.68453,-0.30077 -4.117318,-0.71376 -6.591549,-1.89993 -3.692811,-1.77039 -5.908945,-4.41836 -6.336814,-7.57164 -0.64056,-4.72072 5.072554,-9.83116 11.782013,-10.53911 0.94574,-0.0998 1.97746,-0.21313 2.29271,-0.25185 0.56114,-0.069 0.57486,-0.31734 0.65335,-11.83845 l 0.0801,-11.76805 -34.900761,-0.0235 c -19.195421,-0.0129 -37.718771,-0.0789 -41.163003,-0.14663 l -6.26224,-0.12305 -0.57134,0.7337 c -0.809637,1.0397 -2.55533,1.8611 -4.079086,1.91933 l -1.303675,0.0498 -0.734656,2.48624 c -0.404061,1.36742 -1.169942,3.82152 -1.701957,5.45352 l -0.967304,2.96729 h 13.305608 c 12.131941,0 13.305608,0.0418 13.305608,0.47397 0,0.26069 -0.532832,2.81114 -1.184072,5.66768 l -1.184073,5.19371 1.163558,1.20774 c 1.529065,1.58712 2.20037,3.32759 2.204422,5.71532 0.0059,3.48596 -2.072724,6.40541 -5.357409,7.52448 l -1.5175,0.517 -1.652801,7.04207 c -0.909039,3.87315 -1.753053,7.49803 -1.875588,8.0553 l -0.222789,1.01322 -15.019992,0.14474 -15.01999129,0.14475 -0.82590238,2.60543 c -2.07783373,6.55486 -3.92914493,12.69431 -3.92914493,13.03013 0,0.20264 0.3331277,0.45288 0.7402841,0.55611 1.8730419,0.47487 3.87224856,2.34861 4.28703804,4.018 l 0.19341755,0.77844 H 52.922766 105.08084 Z M 210.468,188.89072 c 0.4135,-1.26563 2.1278,-2.92013 3.79625,-3.66384 l 1.34249,-0.59841 -0.70605,-2.09367 c -0.38831,-1.15152 -1.54786,-4.73053 -2.57679,-7.95334 l -1.87076,-5.85967 -15.24456,-0.075 -15.24458,-0.075 -0.64233,-2.8949 c -0.35328,-1.59221 -1.19155,-5.21687 -1.86283,-8.05482 l -1.22049,-5.15988 -1.5175,-0.5175 c -5.52834,-1.88524 -7.26425,-8.79366 -3.28846,-13.08716 l 1.32214,-1.42778 -1.20105,-5.12761 c -0.66057,-2.82019 -1.19861,-5.35559 -1.19563,-5.63422 0.005,-0.47507 0.82631,-0.50661 13.18853,-0.50661 7.2507,0 13.18309,-0.0497 13.18309,-0.11037 0,-0.14356 -3.04756,-9.72053 -3.30429,-10.38371 -0.14574,-0.3765 -0.52237,-0.5066 -1.4665,-0.5066 -1.44844,0 -3.28628,-0.83857 -3.95687,-1.80544 l -0.45447,-0.65524 h -40.83297 -40.83295 l -3.5e-4,11.94153 -3.3e-4,11.94152 h 1.38708 c 1.93798,0 5.49934,0.97417 7.50088,2.05178 2.1036,1.13257 4.04648,3.04191 4.91452,4.82969 0.89735,1.84816 0.90903,4.63313 0.0265,6.32812 -1.84501,3.54357 -6.5949,6.24244 -12.18113,6.92127 l -1.64787,0.20025 v 16.46766 16.46766 h 52.13698 52.13699 z m 6.60929,0.76229 c 0,-0.10809 -0.27882,-1.07101 -0.61958,-2.13978 l -0.61957,-1.9432 -0.88501,0.29808 c -1.63754,0.55151 -3.88802,2.72755 -3.89314,3.76437 -5.8e-4,0.11942 1.35306,0.21712 3.00812,0.21712 1.65505,0 3.00918,-0.0883 3.00918,-0.19659 z M 30.660491,163.28877 c 0.582303,-2.50774 1.505306,-6.44843 2.051119,-8.75712 0.545813,-2.3087 1.484229,-6.34711 2.085369,-8.97425 2.060539,-9.00506 4.041069,-17.51439 4.195004,-18.02379 0.145652,-0.48199 -0.548493,-0.50551 -12.822416,-0.43425 l -12.976404,0.0754 -1.222874,3.90814 c -0.672581,2.14948 -1.295849,4.24358 -1.385041,4.65354 l -0.16217,0.74543 4.525527,-0.091 c 2.489041,-0.05 4.792428,-0.0182 5.118641,0.0708 0.570419,0.15558 0.483639,0.54864 -2.268179,10.27386 l -2.861292,10.1121 H 9.4381504 3.9385261 l -0.6181875,2.09881 c -0.3400042,1.15434 -1.0680988,3.52911 -1.6179891,5.27727 -0.5498902,1.74817 -0.99980059,3.27884 -0.99980059,3.40153 0,0.12268 6.50232229,0.22306 14.44960509,0.22306 h 14.449605 z m 179.091009,3.86726 c -0.0946,-0.38072 -0.85845,-2.8233 -1.69744,-5.42796 l -1.52545,-4.73576 -5.56821,-0.0784 -5.56824,-0.0782 -2.87249,-10.13488 c -1.57988,-5.57419 -2.79432,-10.17989 -2.69878,-10.23488 0.0955,-0.055 2.39839,-0.0814 5.1174,-0.0588 3.18958,0.0266 4.94193,-0.0632 4.93878,-0.25323 -0.002,-0.16193 -0.62163,-2.24851 -1.37546,-4.63681 l -1.37058,-4.34238 -12.97425,-0.0754 c -12.27088,-0.0713 -12.96604,-0.0476 -12.82324,0.43426 0.0831,0.28026 0.4876,2.00769 0.89902,3.83872 0.4114,1.83102 1.19543,5.21808 1.74228,7.52677 2.16535,9.14175 6.70564,28.67612 6.70564,28.8507 0,0.0541 6.57968,0.0984 14.6215,0.0984 h 14.6215 z M 15.276983,152.57757 c 0.49935,-1.87084 1.661836,-6.00694 2.583301,-9.19135 0.921467,-3.1844 1.629062,-5.87548 1.572438,-5.98018 -0.05663,-0.10471 -2.193285,-0.16983 -4.748132,-0.14475 l -4.645174,0.0456 -1.2498133,4.05287 c -0.6873967,2.22909 -1.9499183,6.27948 -2.8056041,9.00088 -0.8556847,2.72139 -1.5557914,5.09884 -1.5557914,5.28321 0,0.2411 1.3957637,0.33524 4.9704335,0.33524 h 4.9704323 z m 89.623197,-0.39633 0.15198,-3.65314 -1.01866,-0.60711 c -1.34431,-0.80118 -1.39483,-1.85152 -0.12655,-2.63062 l 0.89213,-0.54803 0.0708,-3.64535 0.0708,-3.64534 -1.32111,0.004 c -4.700205,0.0152 -10.295114,3.08086 -11.91472,6.5285 -2.106301,4.48366 1.862787,9.67487 8.58749,11.23165 4.75694,1.10126 4.4268,1.31868 4.60793,-3.03485 z m 5.42267,3.04116 c 6.52374,-1.59649 10.32847,-6.14139 8.86559,-10.59029 -1.22194,-3.71617 -7.07833,-7.15133 -12.23299,-7.17543 l -1.07471,-0.005 v 3.76339 c 0,2.42501 0.10658,3.76339 0.29961,3.76339 0.1648,0 0.62117,0.3248 1.01417,0.72179 0.59308,0.59909 0.66094,0.823 0.39918,1.31706 -0.17347,0.32739 -0.62983,0.73999 -1.01417,0.91689 -0.69006,0.31758 -0.69879,0.37008 -0.69879,4.201 v 3.87941 l 1.3613,-0.18568 c 0.7487,-0.10207 2.13508,-0.37504 3.08081,-0.6065 z m 95.79317,0.39484 c -0.0727,-0.19903 -0.33541,-1.01322 -0.58376,-1.80933 -2.62702,-8.42121 -4.86573,-15.46468 -5.0839,-15.99512 -0.26477,-0.64375 -0.32778,-0.65102 -4.93108,-0.568 -3.02713,0.0545 -4.64356,0.1896 -4.60776,0.38489 0.0591,0.32205 2.49324,9.08252 3.85184,13.86231 0.45257,1.59219 0.9032,3.25316 1.00141,3.69101 l 0.17857,0.7961 h 5.15345 c 4.00221,0 5.12391,-0.0808 5.02123,-0.36186 z M 37.068958,150.24693 c 2.479152,-1.53835 3.731541,-5.18747 2.776831,-8.09094 -0.56297,-1.71211 -2.320672,-3.93899 -2.570686,-3.25689 -0.08755,0.23883 -0.679187,2.71399 -1.314772,5.50033 -0.635587,2.78636 -1.275713,5.50148 -1.422503,6.0336 -0.261245,0.94701 -0.25061,0.96354 0.502494,0.78138 0.423163,-0.10231 1.33605,-0.53773 2.028636,-0.96748 z m 138.422602,-0.9985 c -0.27394,-1.15435 -0.90001,-3.85749 -1.39127,-6.00696 -1.19969,-5.24914 -1.03637,-4.97307 -2.16731,-3.66335 -1.06085,1.22851 -1.85629,3.25027 -1.85629,4.71803 0,1.29916 0.77597,3.50486 1.63174,4.6382 0.64886,0.85929 3.19877,2.41288 3.9603,2.41288 0.22051,0 0.16509,-0.65654 -0.17717,-2.0988 z M 20.310894,113.74878 c 1.403975,-0.79694 1.171502,-1.05615 -0.852764,-0.95083 -1.695242,0.0881 -1.906716,0.16835 -2.150086,0.81494 -0.148455,0.39443 -0.269917,0.77532 -0.269917,0.84645 0,0.27743 2.481308,-0.2613 3.272767,-0.71056 z m 172.515456,0.0369 c -0.10365,-0.43784 -0.24746,-0.90169 -0.31968,-1.03072 -0.195,-0.34847 -3.82446,-0.1254 -3.71104,0.22809 0.17451,0.54399 2.02037,1.26663 3.9987,1.56546 0.12122,0.0182 0.13563,-0.32496 0.032,-0.76283 z';
+
+const REPLAY_PITCH = {
+    viewBoxW: 225.47,
+    viewBoxH: 78.74,
+    centerX: 112,
+    centerY: 39,
+    nearY: 74,
+    farY: 5,
+    leftPenaltyBox: 40,
+    leftGoalArea: 18,
+    rightPenaltyBox: 185,
+    rightGoalArea: 207,
+    centerCircleRadius: 20,
+};
+
+// Tuned formation parameters (from diagnostic calibration)
+const REPLAY_FORMATION_PARAMS = {
+    compression: 0.18,
+    ySpacing: 1.50,
+    xSpacing: 1.10,
+    homePan: 3,
+    awayPan: -3,
+};
+
+// Bench parameters (from diagnostic calibration)
+const REPLAY_BENCH_PARAMS = {
+    yPan: -84,       // bench y-offset from pitch bottom (negative = above pitch)
+    spread: 55,      // horizontal spread of bench players (reduced from 75)
+    arrowLength: 11, // length of sub arrows
+    xPan: -4,        // bench x-offset (shifts bench left)
+};
+
+// Trapezoid perspective transformation
+// As svgY decreases (moving toward far edge), x shifts toward center
+function applyPerspective(baseX, svgY, compression) {
+    const centerX = REPLAY_PITCH.centerX;
+    const yProgress = (REPLAY_PITCH.nearY - svgY) / (REPLAY_PITCH.nearY - REPLAY_PITCH.farY);
+    const compressFactor = 1 - yProgress * compression;
+    return centerX + (baseX - centerX) * compressFactor;
+}
+
+// Formation line base x positions, scaled by xSpacing and team pan
+function getFormationLines(xSpacing, homePan, awayPan) {
+    const baseHomeGK = REPLAY_PITCH.leftGoalArea / 2;                              // x=9
+    const baseHomeDF = REPLAY_PITCH.leftPenaltyBox + 8;                            // x=48
+    const baseHomeMF = REPLAY_PITCH.centerX - REPLAY_PITCH.centerCircleRadius - 2; // x=90
+    const baseHomeFW = (177 + 134) / 2 - 5;                                         // x=150
+
+    const baseAwayGK = (REPLAY_PITCH.rightGoalArea + REPLAY_PITCH.viewBoxW) / 2 - 6;  // x=210 (shifted toward center for visibility)
+    const baseAwayDF = REPLAY_PITCH.rightPenaltyBox - 8;                           // x=177
+    const baseAwayMF = REPLAY_PITCH.centerX + REPLAY_PITCH.centerCircleRadius + 2; // x=134
+    const baseAwayFW = (48 + 90) / 2 + 5;                                           // x=74
+
+    const homeCentroid = (baseHomeGK + baseHomeDF + baseHomeMF + baseHomeFW) / 4;
+    const awayCentroid = (baseAwayGK + baseAwayDF + baseAwayMF + baseAwayFW) / 4;
+
+    const scale = (base, centroid, spacing, pan) => centroid + (base - centroid) * spacing + pan;
+
+    return {
+        homeGK: scale(baseHomeGK, homeCentroid, xSpacing, homePan),
+        homeDF: scale(baseHomeDF, homeCentroid, xSpacing, homePan),
+        homeMF: scale(baseHomeMF, homeCentroid, xSpacing, homePan),
+        homeFW: scale(baseHomeFW, homeCentroid, xSpacing, homePan),
+        awayGK: scale(baseAwayGK, awayCentroid, xSpacing, awayPan),
+        awayDF: scale(baseAwayDF, awayCentroid, xSpacing, awayPan),
+        awayMF: scale(baseAwayMF, awayCentroid, xSpacing, awayPan),
+        awayFW: scale(baseAwayFW, awayCentroid, xSpacing, awayPan),
+    };
+}
+
+// Extract the side prefix (R/L/C) from a position code
+// Returns 'R', 'L', 'C', or null if no prefix
+// Handles: RB, LB, CB, RWB, LWB, RM, LM, CM, CAM, CDM, RAM, LAM, RDM, LDM,
+//          RW, LW, RF, LF, RCM, LCM, etc.
+// Also handles generic DF/MF/FW with R/L/C prefix (RDF, LMF, etc.)
+function getPositionSide(pos) {
+    const p = (pos || '').toUpperCase().trim();
+    if (!p) return null;
+    // Check first character for R/L/C prefix
+    // Must be followed by a non-vowel to avoid false positives
+    if (p.length >= 2) {
+        const first = p[0];
+        const second = p[1];
+        if ((first === 'R' || first === 'L' || first === 'C') && 'BCDMFWSAT'.indexOf(second) >= 0) {
+            return first;
+        }
+    }
+    // Single-letter positions (R, L, C) — rare but handle
+    if (p === 'R') return 'R';
+    if (p === 'L') return 'L';
+    if (p === 'C') return 'C';
+    return null; // No side prefix (e.g. GK, SW, ST, CF, SS, FW, DF, MF, AM, DM)
+}
+
+// Sort players within a line by their side prefix for correct y placement
+// Home: L (top/low y) → C (middle) → R (bottom/high y)
+// Away: R (top/low y) → C (middle) → L (bottom/high y) — mirrored
+// Players without a side prefix are treated as 'C' (center)
+function sortPlayersBySide(players, side) {
+    const sideOrder = side === 'home' ? { L: 0, C: 1, R: 2 } : { R: 0, C: 1, L: 2 };
+    return players.slice().sort((a, b) => {
+        const sa = getPositionSide(a.position);
+        const sb = getPositionSide(b.position);
+        const ra = sa ? sideOrder[sa] : 1; // default to center
+        const rb = sb ? sideOrder[sb] : 1;
+        return ra - rb;
+    });
+}
+
+function computePlayerPositions(groups, side) {
+    const positions = [];
+    const P = REPLAY_FORMATION_PARAMS;
+    const lines = getFormationLines(P.xSpacing, P.homePan, P.awayPan);
+
+    // Y spread range scaled by ySpacing
+    const yCenter = (15 + 63) / 2;  // 39
+    const yHalfRange = (63 - 15) / 2 * P.ySpacing;  // 24 * 1.5 = 36
+    const yMin = yCenter - yHalfRange;
+    const yMax = yCenter + yHalfRange;
+
+    // Process each formation line
+    ['GK', 'DF', 'MF', 'FW'].forEach(posCat => {
+        const players = groups[posCat] || [];
+        if (players.length === 0) return;
+
+        const lineKey = side + posCat;
+        const baseX = lines[lineKey];
+
+        if (posCat === 'GK') {
+            // GK at fixed center y with perspective
+            players.forEach(p => {
+                positions.push({
+                    player: p,
+                    x: applyPerspective(baseX, REPLAY_PITCH.centerY, P.compression),
+                    y: REPLAY_PITCH.centerY,
+                    side: side
+                });
+            });
+        } else {
+            // Sort players by side prefix for correct y placement
+            // Home: L→C→R (top to bottom), Away: R→C→L (top to bottom, mirrored)
+            const sortedPlayers = sortPlayersBySide(players, side);
+            const n = sortedPlayers.length;
+            const yRange = yMax - yMin;
+            const spacing = yRange / (n + 1);
+            sortedPlayers.forEach((p, i) => {
+                const svgY = yMin + (i + 1) * spacing;
+                const svgX = applyPerspective(baseX, svgY, P.compression);
+                positions.push({ player: p, x: svgX, y: svgY, side: side });
+            });
+        }
+    });
+
+    return positions;
+}
+
+function renderPlayerIcon(p, side, pastHighlights, activeHighlight) {
+    const player = p.player || {};
+    const x = p.x;
+    const y = p.y;
+    const num = player.number || '';
+    const name = player.player || player.name || 'Unknown';
+    const isCaptain = !!player.captain;
+    const pos = player.position || '';
+
+    // Normalize names for matching (lowercase, trim, remove extra spaces)
+    const normalizeName = (n) => (n || '').toLowerCase().trim().replace(/\s+/g, ' ');
+    const normName = normalizeName(name);
+
+    // Fuzzy match: short name matches full name if it equals any token, or full matches, or jersey number matches
+    const fuzzyNameMatch = (shortName, fullName) => {
+        const short = normalizeName(shortName);
+        const full = normalizeName(fullName);
+        if (!short || !full) return false;
+        if (short === full) return true;
+        // Check if short name is one of the tokens in the full name
+        const tokens = full.split(' ');
+        return tokens.includes(short);
+    };
+
+    // Determine highlight class: active (current event, bright pulse) takes priority over past (dim static)
+    // Jersey number matching is scoped by team side to avoid highlighting opposing players with same number
+    let highlightCls = '';
+    if (activeHighlight && activeHighlight.name) {
+        const nameMatch = fuzzyNameMatch(activeHighlight.name, name);
+        // Only match by jersey number if the highlight's team matches this player's side
+        const numMatch = activeHighlight.number && num && String(activeHighlight.number) === String(num) &&
+                         activeHighlight.team === side;
+        if (nameMatch || numMatch) {
+            highlightCls = 'highlight-active-' + activeHighlight.type;
+        }
+    }
+    if (!highlightCls && pastHighlights && pastHighlights.length > 0) {
+        const hl = pastHighlights.find(h => {
+            const nameMatch = fuzzyNameMatch(h.name, name);
+            // Only match by jersey number if the highlight's team matches this player's side
+            const numMatch = h.number && num && String(h.number) === String(num) && h.team === side;
+            return nameMatch || numMatch;
+        });
+        if (hl) highlightCls = 'highlight-past-' + hl.type;
+    }
+
+    const cls = ['rs-player-icon', side, isCaptain ? 'captain' : '', highlightCls].filter(Boolean).join(' ');
+    // Scale circle radius and font for the 225×79 viewBox (much smaller coordinate space)
+    const r = 3.6;
+    const fontSize = 3.2;
+    const numText = num ? '<text class="rs-player-num" x="' + x + '" y="' + y + '" font-size="' + fontSize + '">' + esc(num) + '</text>' : '';
+    const capText = isCaptain ? '<text class="rs-player-cap" x="' + x + '" y="' + (y - 4.5) + '" font-size="2">C</text>' : '';
+
+    return '<g class="' + cls + '" data-player-name="' + esc(name) + '" data-player-pos="' + esc(pos) + '" data-player-side="' + side + '">' +
+        '<circle class="rs-player-circle" cx="' + x + '" cy="' + y + '" r="' + r + '" stroke-width="0.5"/>' +
+        numText +
+        capText +
+    '</g>';
+}
+
+function attachPlayerTooltipHandlers() {
+    const tooltip = document.getElementById('rs-player-tooltip');
+    if (!tooltip) return;
+
+    document.querySelectorAll('.rs-player-icon').forEach(icon => {
+        icon.addEventListener('mouseenter', () => {
+            const name = icon.dataset.playerName || 'Unknown';
+            const pos = icon.dataset.playerPos || '';
+            tooltip.innerHTML = esc(name) + (pos ? '<span class="rs-pt-pos">' + esc(pos) + '</span>' : '');
+            tooltip.classList.add('visible');
+        });
+        icon.addEventListener('mousemove', (e) => {
+            tooltip.style.left = (e.clientX + 12) + 'px';
+            tooltip.style.top = (e.clientY - 28) + 'px';
+        });
+        icon.addEventListener('mouseleave', () => {
+            tooltip.classList.remove('visible');
+        });
+    });
+}
+
+// Attach hover tooltips for formation pitch player icons (static match view).
+//
+// Architecture (v157+):
+//   - Uses a SINGLE GLOBAL tooltip element (#hist-lineup-pitch-tooltip) kept at <body> root.
+//   - Tooltip is position:fixed → never clipped by parent containers (leaderboard-body /
+//     profile-body / standings-body / hist-card-body all use overflow-y:auto, which
+//     would clip an absolutely-positioned in-container tooltip).
+//   - Uses event delegation on `document` so it works for any pitch SVG rendered at
+//     any time, in any context (popup / bracket / standings / leaderboard / profile).
+//   - Attached ONCE at startup (see end of script). The _fpTooltipDelegateAttached
+//     flag guards against double-attachment.
+//
+// IMPORTANT: This must NOT be called from inside buildMatchBody — that function
+// returns an HTML string, so any code after the `return` is unreachable. Attach
+// once at startup instead.
+let _fpTooltipDelegateAttached = false;
+function attachFormationPitchTooltips() {
+    if (_fpTooltipDelegateAttached) return;
+    _fpTooltipDelegateAttached = true;
+
+    const tooltipId = 'hist-lineup-pitch-tooltip';
+
+    // Show tooltip on hover-over a .fp-player icon inside .hist-lineup-pitch.
+    // `mouseover` bubbles (unlike `mouseenter`), so it works with delegation.
+    document.addEventListener('mouseover', (e) => {
+        const icon = e.target.closest('.hist-lineup-pitch .fp-player');
+        if (!icon) return;
+        const tooltip = document.getElementById(tooltipId);
+        if (!tooltip) return;
+        const name = icon.dataset.playerName || 'Unknown';
+        const pos = icon.dataset.playerPos || '';
+        tooltip.innerHTML = esc(name) + (pos ? '<span class="tp-pos">' + esc(pos) + '</span>' : '');
+        tooltip.style.display = 'block';
+        // Initial position (will be refined on mousemove)
+        tooltip.style.left = (e.clientX + 14) + 'px';
+        tooltip.style.top  = (e.clientY - 32) + 'px';
+    });
+
+    // Track mouse to follow cursor (uses viewport coords because tooltip is position:fixed).
+    document.addEventListener('mousemove', (e) => {
+        // Cheap check first — avoid DOM lookup on every mousemove
+        if (e.target.closest && e.target.closest('.hist-lineup-pitch .fp-player')) {
+            const tooltip = document.getElementById(tooltipId);
+            if (!tooltip || tooltip.style.display === 'none') return;
+            // Clamp so tooltip doesn't overflow the viewport's right edge
+            const tw = tooltip.offsetWidth || 120;
+            const th = tooltip.offsetHeight || 24;
+            let x = e.clientX + 14;
+            let y = e.clientY - 32;
+            if (x + tw > window.innerWidth - 6)  x = e.clientX - tw - 14;
+            if (y < 4)                           y = e.clientY + 18;
+            if (y + th > window.innerHeight - 6) y = window.innerHeight - th - 6;
+            tooltip.style.left = x + 'px';
+            tooltip.style.top  = y + 'px';
+        }
+    });
+
+    // Hide tooltip when the pointer leaves the icon. `mouseout` fires when the
+    // pointer leaves any descendant of the icon too, so we check relatedTarget
+    // to avoid hiding when moving between children (circle ↔ text) of the same <g>.
+    document.addEventListener('mouseout', (e) => {
+        const icon = e.target.closest && e.target.closest('.hist-lineup-pitch .fp-player');
+        if (!icon) return;
+        const goingTo = e.relatedTarget;
+        if (goingTo && icon.contains(goingTo)) return; // still inside same icon
+        const tooltip = document.getElementById(tooltipId);
+        if (tooltip) tooltip.style.display = 'none';
+    });
+
+    // Also hide if the cursor leaves the window entirely (covers edge cases
+    // where mouseout didn't fire on the icon, e.g. fast mouse jumps).
+    document.addEventListener('mouseleave', () => {
+        const tooltip = document.getElementById(tooltipId);
+        if (tooltip) tooltip.style.display = 'none';
+    });
+}
+
+// ----- PHASE: WHISTLE -----
+
+function renderWhistle(m) {
+    // Update F1 state and bracket tree when match ends
+    updateF1State(m);
+    revealBracketMatch(m.homeTeam, m.awayTeam);
+    replayState.revealedMatchKeys.add(matchKey(m));
+    renderF1Panel(m);
+
+    const stage = normalizeStage(m.stage);
+    const stageTxt = stage === 'final' ? 'WORLD CUP FINAL' : (stage === '3rd' ? 'THIRD PLACE' : stageLabel(m.stage));
+    return '' +
+        '<div class="rs-content rs-whistle-phase">' +
+            '<div class="rs-whistle-stage">' + esc(stageTxt) + '</div>' +
+            '<div class="rs-whistle-teams">' + flagImg(m.homeTeam) + ' ' + esc(m.homeTeam || '') + ' <span style="color:#666">·</span> ' + esc(m.awayTeam || '') + ' ' + flagImg(m.awayTeam) + '</div>' +
+            '<div class="rs-whistle-text">FULL TIME</div>' +
+            '<div class="rs-whistle-score">' + m.homeScore + ' - ' + m.awayScore + '</div>' +
+        '</div>';
+}
+
+// ----- PHASE: CONSEQUENCE -----
+
+function renderConsequence(m) {
+    // Update F1 state and bracket tree
+    updateF1State(m);
+    revealBracketMatch(m.homeTeam, m.awayTeam);
+    replayState.revealedMatchKeys.add(matchKey(m));
+    renderF1Panel(m);
+
+    const stage = normalizeStage(m.stage);
+    const winner = determineWinner(m);
+    const loser = winner === m.homeTeam ? m.awayTeam : m.homeTeam;
+    const isDraw = (m.homeScore === m.awayScore);
+
+    let consequenceHtml = '';
+    if (isKnockoutStage(stage)) {
+        if (stage === 'final') {
+            consequenceHtml = '' +
+                '<div style="font-size: 0.7rem; color: #FFD700; letter-spacing: 3px; margin-bottom: 6px;">★ CHAMPION ★</div>' +
+                '<div style="display: flex; align-items: center; gap: 14px; font-size: 1.3rem; font-weight: 700; color: #FFD700;">' +
+                    flagImg(winner, 'lg') +
+                    '<span>' + esc(winner) + '</span>' +
+                '</div>' +
+                '<div style="font-size: 0.75rem; color: #888; margin-top: 8px;">Runner-up: ' + esc(loser) + '</div>';
+        } else if (stage === '3rd') {
+            consequenceHtml = '' +
+                '<div style="font-size: 0.7rem; color: #aaa; letter-spacing: 2px; margin-bottom: 6px;">3RD PLACE</div>' +
+                '<div style="display: flex; align-items: center; gap: 14px; font-size: 1.2rem; font-weight: 700; color: #CAEEC2;">' +
+                    flagImg(winner, 'lg') +
+                    '<span>' + esc(winner) + '</span>' +
+                '</div>';
+        } else {
+            consequenceHtml = '' +
+                '<div style="font-size: 0.7rem; color: #888; letter-spacing: 2px; margin-bottom: 6px;">' + esc(stageLabel(stage).toUpperCase()) + ' — RESULT</div>' +
+                '<div style="display: flex; align-items: center; gap: 12px; font-size: 1.05rem; font-weight: 600; color: #CAEEC2;">' +
+                    flagImg(winner) + ' <span>' + esc(winner) + '</span>' +
+                    '<span style="color:#666; margin: 0 8px;">advances</span>' +
+                '</div>' +
+                '<div style="font-size: 0.75rem; color: #888; margin-top: 6px;">' + flagImg(loser) + ' ' + esc(loser) + ' eliminated</div>';
+        }
+    } else {
+        const grp = findGroupForTeam(m.homeTeam);
+        let grpKey = null;
+        if (grp && replayState.f1State) {
+            grpKey = Object.keys(replayState.f1State.groups).find(k => replayState.f1State.groups[k] === grp);
+        }
+        if (isDraw) {
+            consequenceHtml = '' +
+                '<div style="font-size: 0.7rem; color: #888; letter-spacing: 2px; margin-bottom: 6px;">' + (grpKey ? 'GROUP ' + esc(grpKey) : 'GROUP STAGE') + ' — DRAW</div>' +
+                '<div style="font-size: 1rem; color: #ccc;">' + flagImg(m.homeTeam) + ' ' + esc(m.homeTeam) + ' ' + m.homeScore + ' – ' + m.awayScore + ' ' + esc(m.awayTeam) + ' ' + flagImg(m.awayTeam) + '</div>' +
+                '<div style="font-size: 0.7rem; color: #888; margin-top: 6px;">Both teams earn 1 point</div>';
+        } else {
+            consequenceHtml = '' +
+                '<div style="font-size: 0.7rem; color: #888; letter-spacing: 2px; margin-bottom: 6px;">' + (grpKey ? 'GROUP ' + esc(grpKey) : 'GROUP STAGE') + ' — RESULT</div>' +
+                '<div style="display: flex; align-items: center; gap: 12px; font-size: 1.05rem; font-weight: 600; color: #CAEEC2;">' +
+                    flagImg(winner) + ' <span>' + esc(winner) + '</span>' +
+                    '<span style="color:#666; margin: 0 8px;">+3 pts</span>' +
+                '</div>' +
+                '<div style="font-size: 0.75rem; color: #888; margin-top: 6px;">' + flagImg(loser) + ' ' + esc(loser) + ' · 0 pts</div>';
+        }
+    }
+
+    return '' +
+        '<div class="rs-content" style="gap: 10px;">' +
+            consequenceHtml +
+        '</div>';
+}
+
+// ----- PHASE: PAUSE -----
+
+function renderPause(m) {
+    const nextIdx = replayState.currentIdx + 1;
+    const nextMatch = nextIdx < getReplayTotal() ? getReplayMatch(nextIdx) : null;
+
+    let nextHtml = '';
+    if (nextMatch) {
+        const nextStage = normalizeStage(nextMatch.stage);
+        const stageTxt = nextStage === 'final' ? '★ FINAL ★' : stageLabel(nextMatch.stage);
+        nextHtml = '' +
+            '<div class="rs-pause-text">NEXT UP</div>' +
+            '<div style="font-size: 0.65rem; color: #FFD700; letter-spacing: 2px;">' + esc(stageTxt.toUpperCase()) + '</div>' +
+            '<div class="rs-pause-next">' +
+                flagImg(nextMatch.homeTeam) + ' <span>' + esc(nextMatch.homeTeam) + '</span>' +
+                '<span style="color:#666; font-size: 0.8rem;">vs</span>' +
+                '<span>' + esc(nextMatch.awayTeam) + '</span> ' + flagImg(nextMatch.awayTeam) +
+            '</div>' +
+            '<div style="font-size: 0.65rem; color: #666; margin-top: 4px;">' + esc(nextMatch.date || '') + '</div>';
+    } else {
+        nextHtml = '' +
+            '<div class="rs-pause-text">TOURNAMENT COMPLETE</div>' +
+            '<div style="font-size: 0.7rem; color: #888; margin-top: 8px;">All matches played</div>';
+    }
+
+    return '<div class="rs-content rs-pause-phase">' + nextHtml + '</div>';
+}
+
+// ----- PHASE: CEREMONY OUTRO (final only) -----
+
+function renderCeremonyOutro(m) {
+    const champion = determineWinner(m);
+    const runnerUp = champion === m.homeTeam ? m.awayTeam : m.homeTeam;
+
+    if (replayState.f1State) {
+        replayState.f1State.champion = champion;
+        replayState.f1State.aliveTeams = [champion];
+        renderF1Panel(m);
+    }
+
+    return '' +
+        '<div class="rs-content">' +
+            '<div class="rs-ceremony">' +
+                '<div class="rs-confetti">' + generateConfetti(60) + '</div>' +
+                '<div class="rs-ceremony-trophy">🏆</div>' +
+                '<div class="rs-ceremony-subtitle">' + esc(histLookups.currentYear || '') + ' World Cup Champions</div>' +
+                '<div class="rs-ceremony-champion">' +
+                    flagImg(champion, 'lg') +
+                    '<div class="cname">' + esc(champion) + '</div>' +
+                    '<div class="clabel">★ Champions ★</div>' +
+                '</div>' +
+                '<div style="font-size: 0.7rem; color: #666; margin-top: 8px;">Runner-up: ' + esc(runnerUp) + '</div>' +
+            '</div>' +
+        '</div>';
+}
+
+// ----- CONFETTI GENERATOR -----
+
+function generateConfetti(count) {
+    const colors = ['#FFD700', '#FFA500', '#FF6347', '#87CEEB', '#98FB98', '#DDA0DD', '#F0E68C'];
+    let html = '';
+    for (let i = 0; i < count; i++) {
+        const left = Math.random() * 100;
+        const duration = 2 + Math.random() * 3;
+        const delay = Math.random() * 3;
+        const color = colors[Math.floor(Math.random() * colors.length)];
+        html += '<div class="rs-confetti-piece" style="left: ' + left + '%; background: ' + color + '; animation-duration: ' + duration + 's; animation-delay: ' + delay + 's;"></div>';
+    }
+    return html;
+}
+
+// ----- BRACKET TREE FUNCTIONS -----
+
+function blankBracketTreeIfNeeded() {
+    const container = document.getElementById('bracket-svg-container');
+    if (!container) return;
+    if (!container.classList.contains('visible')) return;
+    const matches = container.querySelectorAll('.bk-match');
+    matches.forEach(m => {
+        m.style.opacity = '0.15';
+        m.dataset.revealed = 'false';
+    });
+}
+
+function revealBracketMatch(homeTeam, awayTeam) {
+    const container = document.getElementById('bracket-svg-container');
+    if (!container) return;
+    if (!container.classList.contains('visible')) return;
+    const matches = container.querySelectorAll('.bk-match');
+    matches.forEach(g => {
+        if (g.dataset.revealed === 'true') return;
+        const texts = g.querySelectorAll('.bk-text.team');
+        let found = false;
+        texts.forEach(t => {
+            const name = t.textContent.trim();
+            if (name === homeTeam || name === awayTeam) found = true;
+        });
+        if (found) {
+            g.style.opacity = '1';
+            g.dataset.revealed = 'true';
+            g.style.transition = 'opacity 0.5s ease';
+        }
+    });
+}
+
+function restoreBracketTree() {
+    const container = document.getElementById('bracket-svg-container');
+    if (!container) return;
+    const matches = container.querySelectorAll('.bk-match');
+    matches.forEach(m => {
+        m.style.opacity = '';
+        m.dataset.revealed = '';
+        m.style.transition = '';
+    });
+}
+
+// History bar: click opens standings
+document.getElementById('history-bar').addEventListener('click', (e) => {
+    openStandingsOverlay();
+});
+
+// Bracket tree toggle button
+document.getElementById('bracket-toggle-btn').addEventListener('click', () => {
+    toggleBracketTree();
+});
+
+// Replay control buttons
+document.getElementById('rp-play').addEventListener('click', () => {
+    if (replayState.playing) { pauseReplay(); }
+    else { playReplay(); }
+});
+document.getElementById('rp-prev').addEventListener('click', () => skipReplay(-1));
+document.getElementById('rp-next').addEventListener('click', () => skipReplay(1));
+document.getElementById('rp-slower').addEventListener('click', () => changeSpeed(-1));
+document.getElementById('rp-faster').addEventListener('click', () => changeSpeed(1));
+document.getElementById('rp-speed').addEventListener('click', resetSpeed);
+document.getElementById('rp-close').addEventListener('click', hideReplayControls);
+document.getElementById('rp-menu-btn').addEventListener('click', () => {
+    const menu = document.getElementById('replay-event-menu');
+    if (menu) menu.classList.toggle('visible');
+});
+document.getElementById('rp-show-goals').addEventListener('change', (e) => { replayState.showGoals = e.target.checked; });
+document.getElementById('rp-show-cards').addEventListener('change', (e) => { replayState.showCards = e.target.checked; });
+document.getElementById('rp-show-subs').addEventListener('change', (e) => { replayState.showSubs = e.target.checked; });
+
+// Show replay controls when a year is selected (add a play button trigger)
+// We'll add a small play icon to the timeline-center-marker click behavior
+let replayTriggerAdded = false;
+function ensureReplayTrigger() {
+    if (replayTriggerAdded) return;
+    replayTriggerAdded = true;
+    // Add a small "Play" button next to the center marker
+    const centerMarker = document.getElementById('timeline-center-marker');
+    if (centerMarker) {
+        centerMarker.addEventListener('dblclick', (e) => {
+            e.stopPropagation();
+            if (replayState.matchCards.length === 0) {
+                showReplayControls();
+                playReplay();
+            } else {
+                hideReplayControls();
+            }
+        });
+    }
+}
+// Call after init
+setTimeout(ensureReplayTrigger, 1000);
+
+// Helper: close all overlays (like bracket toggle closes others)
+function closeAllOverlays() {
+    closeLeaderboard();
+    closeProfile();
+    closeCompare();
+    closeSearch();
+}
+
+// Leaderboard button — toggle behavior (close others, toggle self)
+document.getElementById('leaderboard-btn').addEventListener('click', () => {
+    const overlay = document.getElementById('leaderboard-overlay');
+    if (overlay.classList.contains('visible')) {
+        closeLeaderboard();
+    } else {
+        closeAllOverlays();
+        openLeaderboard();
+    }
+});
+
+// Compare button — toggle behavior
+document.getElementById('compare-btn').addEventListener('click', () => {
+    const overlay = document.getElementById('compare-overlay');
+    if (overlay.classList.contains('visible')) {
+        closeCompare();
+    } else {
+        closeAllOverlays();
+        openCompare();
+    }
+});
+document.getElementById('compare-close').addEventListener('click', closeCompare);
+
+// Search button — toggle behavior
+document.getElementById('search-btn').addEventListener('click', () => {
+    const overlay = document.getElementById('search-overlay');
+    if (overlay.classList.contains('visible')) {
+        closeSearch();
+    } else {
+        closeAllOverlays();
+        openSearch();
+    }
+});
+document.getElementById('search-close').addEventListener('click', closeSearch);
+document.getElementById('search-overlay-input').addEventListener('input', (e) => {
+    performGlobalSearch(e.target.value);
+});
+
+// Replay button
+document.getElementById('replay-btn').addEventListener('click', () => {
+    const btn = document.getElementById('replay-btn');
+    const controls = document.getElementById('replay-controls');
+    if (controls.classList.contains('visible')) {
+        hideReplayControls();
+        btn.classList.remove('active');
+    } else {
+        showReplayControls();
+        btn.classList.add('active');
+        playReplay();
+    }
+});
+
+// Leaderboard close button (removed in v112 — header/title/close stripped from card; close via icon toggle or closeAllOverlays)
+const leaderboardCloseBtn = document.getElementById('leaderboard-close');
+if (leaderboardCloseBtn) leaderboardCloseBtn.addEventListener('click', closeLeaderboard);
+
+// Profile close button (search result profile card)
+document.getElementById('profile-close').addEventListener('click', closeProfile);
+
+// Leaderboard backdrop click
+// Leaderboard overlay is transparent — no backdrop click to close (map stays interactive)
+
+// Re-render bracket tree on window resize (so it fills available space)
+window.addEventListener('resize', () => {
+    const container = document.getElementById('bracket-svg-container');
+    if (container && container.classList.contains('visible')) {
+        toggleBracketTree(true); // re-render with new dimensions
+    }
+});
+
+// Timeline auto-hide: show on hover near top edge (with delay), pin on click
+(function() {
+    const wrapper = document.getElementById('timeline-wrapper');
+    const hoverZone = document.getElementById('timeline-hover-zone');
+    const map = document.getElementById('map');
+    if (!wrapper || !hoverZone) return;
+
+    // Debounce timer for mouseenter — prevents random mouse movement from triggering
+    let showTimer = null;
+    const SHOW_DELAY = 250; // ms — user must hover for this long before timeline shows
+
+    // Show timeline on hover over the top zone (with delay to avoid false triggers)
+    hoverZone.addEventListener('mouseenter', () => {
+        if (showTimer) clearTimeout(showTimer);
+        showTimer = setTimeout(() => {
+            wrapper.style.transform = 'translateY(0)';
+            map.classList.add('timeline-visible');
+            showTimer = null;
+        }, SHOW_DELAY);
+    });
+    // Cancel pending show if mouse leaves before delay completes
+    hoverZone.addEventListener('mouseleave', () => {
+        if (showTimer) { clearTimeout(showTimer); showTimer = null; }
+    });
+    wrapper.addEventListener('mouseleave', () => {
+        if (!wrapper.classList.contains('pinned')) {
+            wrapper.style.transform = 'translateY(-100%)';
+            map.classList.remove('timeline-visible');
+        }
+    });
+
+    // Pin/unpin on click of the center marker
+    const centerMarker = document.getElementById('timeline-center-marker');
+    if (centerMarker) {
+        centerMarker.addEventListener('click', (e) => {
+            e.stopPropagation();
+            wrapper.classList.toggle('pinned');
+            if (wrapper.classList.contains('pinned')) {
+                wrapper.style.transform = 'translateY(0)';
+                map.classList.add('timeline-visible');
+            } else {
+                wrapper.style.transform = 'translateY(-100%)';
+                map.classList.remove('timeline-visible');
+            }
+            // Re-render bracket if visible (space changed)
+            const bc = document.getElementById('bracket-svg-container');
+            if (bc && bc.classList.contains('visible')) {
+                setTimeout(() => toggleBracketTree(true), 450); // wait for transition
+            }
+            // Update overlay ceiling (Rule 1) — search/compare panels track timeline pin state
+            if (typeof updateOverlayFloor === 'function') updateOverlayFloor();
+        });
+    }
+})();
+
+// Close button
+document.getElementById('standings-close').addEventListener('click', closeStandingsOverlay);
+
+// Click on overlay backdrop (outside the card) closes it
+document.getElementById('standings-overlay').addEventListener('click', (e) => {
+    if (e.target.id === 'standings-overlay') closeStandingsOverlay();
+});
+
+// ESC key closes all overlays
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        closeStandingsOverlay();
+        toggleBracketTree(false);
+        closeBracketPopup();
+        closeLeaderboard();
+        closeCompare();
+        closeSearch();
+        hideReplayControls();
+    }
+});
+
+// Start Application
+processData();
+initTimeline();
+
+// Attach global event-delegated tooltip listeners for formation pitch SVGs.
+// Must be called once after the document is ready (the global #hist-lineup-pitch-tooltip
+// div is defined in <body>). This covers ALL contexts where renderFormationPitch is used:
+// popup, bracket, standings, leaderboard, and profile. Safe to call multiple times
+// (guarded by _fpTooltipDelegateAttached flag).
+attachFormationPitchTooltips();
+
+// ✅ Load historical data SEPARATELY (after init completes)
+// Call this when user selects a year or on demand
+async function loadHistoricalYear(year) {
+    try {
+        console.log(`📅 Loading historical data for ${year}...`);
+        await loadHistoricalData(year);
+        console.log(`✅ Historical data for ${year} loaded successfully.`);
+    } catch (error) {
+        console.error(`❌ Failed to load historical data:`, error);
+    }
+}
+
+// Example: Load 2002 data automatically after init
+// Uncomment if you want historical data to load on startup
+//loadHistoricalYear(2002);   
+    
